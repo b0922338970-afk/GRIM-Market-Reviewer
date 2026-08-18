@@ -3,17 +3,20 @@
 from __future__ import annotations
 
 import json
+import time
 from pathlib import Path
 
 from .model import (
     ACTIVE_SYMBOLS,
+    DataUnavailable,
     TIMEFRAME_SECONDS,
     Candle,
     new_generation_id,
+    to_market_data_frame,
     utc_now_iso,
     validate_generation,
 )
-from .providers import MarketDataProvider, choose_complete_provider
+from .providers import CRYPTO_PROVIDER_ORDER, MarketDataProvider, default_crypto_providers
 
 
 def closed_candle_timestamp(candle: Candle, timeframe: str, fetch_timestamp: int) -> int | None:
@@ -65,9 +68,26 @@ def fetch_external_generation(
     fetch_timestamp: int,
 ) -> dict[str, dict[str, dict]]:
     snapshot: dict[str, dict[str, dict]] = {}
+    ordered = sorted(
+        providers,
+        key=lambda provider: CRYPTO_PROVIDER_ORDER.index(provider.name)
+        if provider.name in CRYPTO_PROVIDER_ORDER
+        else len(CRYPTO_PROVIDER_ORDER),
+    )
     for symbol in ACTIVE_SYMBOLS:
-        provider, raw_frames = choose_complete_provider(symbol, providers)
-        snapshot[symbol] = build_symbol_generation(symbol, provider, raw_frames, fetch_timestamp)
+        for provider in ordered:
+            raw_frames = {timeframe: provider.fetch_ohlcv(symbol, timeframe) for timeframe in TIMEFRAME_SECONDS}
+            if any(not candles for candles in raw_frames.values()):
+                continue
+            staged = build_symbol_generation(symbol, provider, raw_frames, fetch_timestamp)
+            try:
+                validate_generation({tf: to_market_data_frame(raw) for tf, raw in staged.items()})
+            except DataUnavailable:
+                continue
+            snapshot[symbol] = staged
+            break
+        if symbol not in snapshot:
+            raise RuntimeError("DATA_UNAVAILABLE")
     return snapshot
 
 
@@ -97,7 +117,13 @@ def has_new_closed_candle(
 def publish_artifact(snapshot: dict[str, dict[str, dict]], output_dir: Path) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     for symbol, frames in snapshot.items():
-        validate_generation({tf: __import__("market_reviewer.model", fromlist=["to_market_data_frame"]).to_market_data_frame(raw) for tf, raw in frames.items()})
+        validate_generation({tf: to_market_data_frame(raw) for tf, raw in frames.items()})
     path = output_dir / "market-data-v1.json"
     path.write_text(json.dumps(snapshot, indent=2, sort_keys=True), encoding="utf-8")
     return path
+
+
+def run_external_fetch(output_dir: Path, fetch_timestamp: int | None = None) -> Path:
+    timestamp = int(time.time()) if fetch_timestamp is None else fetch_timestamp
+    snapshot = fetch_external_generation(default_crypto_providers(), timestamp)
+    return publish_artifact(snapshot, output_dir)

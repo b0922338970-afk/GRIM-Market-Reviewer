@@ -14,8 +14,14 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
           python -m compileall -q market_reviewer tests
+          python -m market_reviewer.cli --help
 
-      - name: External runner placeholder
-        run: |
-          echo "fetch -> integrity gate -> generation -> immutable artifact"
-          echo "artifact name: market-data-v1-${{ github.run_id }}-${{ github.run_attempt }}"
+      - name: Fetch external market data
+        run: python -m market_reviewer.cli fetch-external --output-dir artifact
+
+      - name: Upload market-data.v1 artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: market-data-v1-${{ github.run_id }}-${{ github.run_attempt }}
+          path: artifact/market-data-v1.json
+          if-no-files-found: error
