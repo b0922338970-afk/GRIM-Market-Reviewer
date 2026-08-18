@@ -54,7 +54,7 @@ class ReviewerV2Tests(unittest.TestCase):
     def test_structure_uses_confirmed_swings_for_bos(self) -> None:
         result = analyze_structure(frame("M15", structure_candles()))
         self.assertTrue(result.swings)
-        self.assertIn(result.last_bos, {"BULLISH", "BEARISH", "NONE"})
+        self.assertIn(result.last_bos.direction if result.last_bos else "NONE", {"BULLISH", "BEARISH", "NONE"})
         self.assertNotEqual(result.state, "RANGE")
 
     def test_liquidity_levels_are_from_confirmed_swings(self) -> None:
@@ -78,16 +78,16 @@ class ReviewerV2Tests(unittest.TestCase):
         market = frame("M5", structure_candles())
         structure = analyze_structure(market)
         blocks = find_order_blocks(market, structure)
-        if structure.last_bos == "NONE":
+        if structure.last_bos is None:
             self.assertEqual(blocks, [])
         else:
-            self.assertTrue(all(block.direction == structure.last_bos for block in blocks))
+            self.assertTrue(all(block.direction == structure.last_bos.direction for block in blocks))
 
     def test_current_poi_is_not_latest_close(self) -> None:
         frames = {tf: frame(tf, structure_candles()) for tf in TIMEFRAMES}
         review = review_symbol(frames).to_dict()
         latest_close = f"{frames['M5'].closed_candles()[-1].close:.2f}"
-        self.assertNotEqual(review["Current_POI"], latest_close)
+        self.assertNotEqual(review["Primary_POI"], latest_close)
         self.assertEqual(review["Confidence"], "UNCALIBRATED")
 
     def test_real_artifact_regression_initializes_without_execution(self) -> None:
