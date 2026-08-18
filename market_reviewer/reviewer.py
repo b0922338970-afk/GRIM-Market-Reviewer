@@ -1,8 +1,9 @@
-"""Closed-candle market phase, structure, liquidity, and POI review."""
+"""Closed-candle market phase, liquidity event, and trigger sequence review."""
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+from statistics import median
 
 from .model import Candle, MarketDataFrame, TIMEFRAMES, validate_generation
 
@@ -11,7 +12,6 @@ ALLOWED_STATES = ("NO_TRADE", "WAIT", "WATCH", "ARMED")
 HTF_TIMEFRAMES = ("D1", "H4")
 TACTICAL_TIMEFRAMES = ("H1", "M15", "M5")
 TRIGGER_TIMEFRAMES = ("M15", "M5")
-PHASES = ("CONTINUATION", "PULLBACK", "REVERSAL_CANDIDATE", "RANGE", "TRANSITION")
 
 
 @dataclass(frozen=True)
@@ -31,6 +31,17 @@ class BreakEvent:
 
 
 @dataclass(frozen=True)
+class StructureEvent:
+    direction: str
+    price: float
+    timestamp: int
+    kind: str
+    previous_state: str
+    new_state: str
+    evidence: str
+
+
+@dataclass(frozen=True)
 class Structure:
     timeframe: str
     state: str
@@ -43,6 +54,7 @@ class Structure:
     last_swing_high: Swing | None
     last_swing_low: Swing | None
     swings: list[Swing]
+    events: list[StructureEvent]
 
 
 @dataclass(frozen=True)
@@ -52,6 +64,31 @@ class LiquidityLevel:
     timeframe: str
     formed_at: int
     status: str
+
+
+@dataclass(frozen=True)
+class LiquidityEvent:
+    level_price: float
+    level_type: str
+    timeframe: str
+    event_type: str
+    timestamp: int
+    sweep_price: float | None
+    penetration: float
+    close_location: str
+
+
+@dataclass(frozen=True)
+class DisplacementEvent:
+    direction: str
+    strength: str
+    timestamp: int
+    structure_broken: str
+    fvg_created: bool
+    body_ratio: float
+    range_ratio: float
+    close_near_extreme: bool
+    follow_through: bool
 
 
 @dataclass(frozen=True)
@@ -65,6 +102,8 @@ class FairValueGap:
     status: str
     touch_count: int
     displacement_strength: float
+    setup_type: str = "GENERIC_FVG"
+    related_displacement_id: str | None = None
 
 
 @dataclass(frozen=True)
@@ -93,6 +132,15 @@ class POI:
     status: str
     quality: dict
     score: float
+    width_pct: float
+
+
+@dataclass(frozen=True)
+class SequenceTransition:
+    previous_state: str
+    new_state: str
+    timestamp: int
+    evidence: str
 
 
 @dataclass
@@ -100,17 +148,26 @@ class Review:
     Symbol: str
     Swing_Bias: str
     Current_Phase: str
+    Pullback_Stage: str
     Market_Regime: str
     D1_Structure: str
     H4_Structure: str
     H1_Structure: str
+    Last_Structure_Events: dict[str, list[str]]
     Structural_Invalidation: dict[str, str]
     Macro_Draw_on_Liquidity: str
     Tactical_Draw_on_Liquidity: str
     Premium_Discount: str
+    Liquidity_Event: str
+    Displacement: str
+    Contextual_MSS: str
+    Setup_FVG: str
     Primary_POI: str
     Secondary_POI: str
+    POI_Width: str
     POI_Conflict: str
+    Sequence_State: str
+    Sequence_Transitions: list[dict]
     Preferred_Direction: str
     State: str
     Thesis_Status: str
@@ -123,6 +180,7 @@ class Review:
     Protected_High: dict[str, str]
     Protected_Low: dict[str, str]
     Liquidity: list[dict]
+    Liquidity_Events: list[dict]
     FVG: list[dict]
     Order_Blocks: list[dict]
 
@@ -166,13 +224,14 @@ def analyze_structure(frame: MarketDataFrame) -> Structure:
     for swing in swings:
         swings_by_time.setdefault(swing.formed_at, []).append(swing)
 
-    direction = "RANGE"
+    state = "RANGE"
     high_cursor: Swing | None = None
     low_cursor: Swing | None = None
     protected_high: float | None = None
     protected_low: float | None = None
     last_bos: BreakEvent | None = None
     last_mss: BreakEvent | None = None
+    events: list[StructureEvent] = []
 
     for candle in candles:
         for swing in swings_by_time.get(candle.timestamp, []):
@@ -181,47 +240,57 @@ def analyze_structure(frame: MarketDataFrame) -> Structure:
             else:
                 low_cursor = swing
 
-        if direction == "BULLISH" and protected_low is not None and candle.close < protected_low:
-            last_mss = BreakEvent("BEARISH", protected_low, candle.timestamp, "MSS")
-            direction = "BEARISH"
-            if high_cursor:
-                protected_high = high_cursor.price
-            continue
-        if direction == "BEARISH" and protected_high is not None and candle.close > protected_high:
-            last_mss = BreakEvent("BULLISH", protected_high, candle.timestamp, "MSS")
-            direction = "BULLISH"
-            if low_cursor:
-                protected_low = low_cursor.price
-            continue
+        bullish_break = high_cursor and candle.timestamp > high_cursor.formed_at and candle.close > high_cursor.price
+        bearish_break = low_cursor and candle.timestamp > low_cursor.formed_at and candle.close < low_cursor.price
 
-        if high_cursor and candle.timestamp > high_cursor.formed_at and candle.close > high_cursor.price:
-            if direction in {"RANGE", "BULLISH"}:
-                last_bos = BreakEvent("BULLISH", high_cursor.price, candle.timestamp, "BOS")
+        if state == "BULLISH" and protected_low is not None and candle.close < protected_low:
+            event = StructureEvent("BEARISH", protected_low, candle.timestamp, "MSS", state, "BEARISH", "closed below bullish protected low")
+            events.append(event)
+            last_mss = BreakEvent(event.direction, event.price, event.timestamp, event.kind)
+            state = "BEARISH"
+            protected_high = high_cursor.price if high_cursor else protected_high
+            continue
+        if state == "BEARISH" and protected_high is not None and candle.close > protected_high:
+            event = StructureEvent("BULLISH", protected_high, candle.timestamp, "MSS", state, "BULLISH", "closed above bearish protected high")
+            events.append(event)
+            last_mss = BreakEvent(event.direction, event.price, event.timestamp, event.kind)
+            state = "BULLISH"
+            protected_low = low_cursor.price if low_cursor else protected_low
+            continue
+        if bullish_break:
+            kind = "BOS" if state in {"RANGE", "BULLISH"} else "MSS"
+            previous = state
+            event = StructureEvent("BULLISH", high_cursor.price, candle.timestamp, kind, previous, "BULLISH", "closed above confirmed swing high")
+            events.append(event)
+            if kind == "BOS":
+                last_bos = BreakEvent(event.direction, event.price, event.timestamp, event.kind)
             else:
-                last_mss = BreakEvent("BULLISH", protected_high or high_cursor.price, candle.timestamp, "MSS")
-            direction = "BULLISH"
-            if low_cursor:
-                protected_low = low_cursor.price
-        elif low_cursor and candle.timestamp > low_cursor.formed_at and candle.close < low_cursor.price:
-            if direction in {"RANGE", "BEARISH"}:
-                last_bos = BreakEvent("BEARISH", low_cursor.price, candle.timestamp, "BOS")
+                last_mss = BreakEvent(event.direction, event.price, event.timestamp, event.kind)
+            state = "BULLISH"
+            protected_low = low_cursor.price if low_cursor else protected_low
+        elif bearish_break:
+            kind = "BOS" if state in {"RANGE", "BEARISH"} else "MSS"
+            previous = state
+            event = StructureEvent("BEARISH", low_cursor.price, candle.timestamp, kind, previous, "BEARISH", "closed below confirmed swing low")
+            events.append(event)
+            if kind == "BOS":
+                last_bos = BreakEvent(event.direction, event.price, event.timestamp, event.kind)
             else:
-                last_mss = BreakEvent("BEARISH", protected_low or low_cursor.price, candle.timestamp, "MSS")
-            direction = "BEARISH"
-            if high_cursor:
-                protected_high = high_cursor.price
+                last_mss = BreakEvent(event.direction, event.price, event.timestamp, event.kind)
+            state = "BEARISH"
+            protected_high = high_cursor.price if high_cursor else protected_high
 
-    if direction == "RANGE":
+    if state == "RANGE":
         recent = [s.label for s in swings[-4:]]
         if {"HH", "HL"}.issubset(recent):
-            direction = "BULLISH"
+            state = "BULLISH"
         elif {"LH", "LL"}.issubset(recent):
-            direction = "BEARISH"
+            state = "BEARISH"
 
-    if direction == "BULLISH":
+    if state == "BULLISH":
         invalidation_price = protected_low
         invalidation_type = f"break below {invalidation_price:.2f}" if invalidation_price is not None else "NONE"
-    elif direction == "BEARISH":
+    elif state == "BEARISH":
         invalidation_price = protected_high
         invalidation_type = f"break above {invalidation_price:.2f}" if invalidation_price is not None else "NONE"
     else:
@@ -230,7 +299,7 @@ def analyze_structure(frame: MarketDataFrame) -> Structure:
 
     return Structure(
         timeframe=frame.timeframe,
-        state=direction,
+        state=state,
         last_bos=last_bos,
         last_mss=last_mss,
         protected_high=protected_high,
@@ -240,22 +309,56 @@ def analyze_structure(frame: MarketDataFrame) -> Structure:
         last_swing_high=swing_highs[-1] if swing_highs else None,
         last_swing_low=swing_lows[-1] if swing_lows else None,
         swings=swings,
+        events=events,
     )
 
 
-def _status_for_level(candles: list[Candle], level: LiquidityLevel) -> str:
-    later = [c for c in candles if c.timestamp > level.formed_at]
-    if not later:
-        return "UNSWEPT"
+def _close_location(candle: Candle, level: LiquidityLevel) -> str:
     if "Buy-side" in level.type or "Highs" in level.type:
-        swept = [c for c in later if c.high > level.price]
-        if not swept:
-            return "UNSWEPT"
-        return "RECLAIMED" if any(c.close < level.price for c in swept) else "SWEPT"
-    swept = [c for c in later if c.low < level.price]
-    if not swept:
-        return "UNSWEPT"
-    return "RECLAIMED" if any(c.close > level.price for c in swept) else "SWEPT"
+        return "OUTSIDE" if candle.close > level.price else "INSIDE"
+    return "OUTSIDE" if candle.close < level.price else "INSIDE"
+
+
+def _liquidity_events_for_level(candles: list[Candle], level: LiquidityLevel) -> list[LiquidityEvent]:
+    events: list[LiquidityEvent] = []
+    tolerance = max(level.price * 0.001, 0.01)
+    swept = False
+    reclaimed = False
+    for candle in [c for c in candles if c.timestamp > level.formed_at]:
+        if "Buy-side" in level.type or "Highs" in level.type:
+            distance = level.price - candle.high
+            beyond = candle.high > level.price
+            sweep_price = candle.high
+            penetration = max(0.0, candle.high - level.price)
+            reclaim = swept and candle.close < level.price
+        else:
+            distance = candle.low - level.price
+            beyond = candle.low < level.price
+            sweep_price = candle.low
+            penetration = max(0.0, level.price - candle.low)
+            reclaim = swept and candle.close > level.price
+        if not swept and 0 <= distance <= tolerance:
+            events.append(LiquidityEvent(level.price, level.type, level.timeframe, "APPROACHED", candle.timestamp, None, 0.0, _close_location(candle, level)))
+        if beyond and not swept:
+            swept = True
+            events.append(LiquidityEvent(level.price, level.type, level.timeframe, "SWEPT", candle.timestamp, sweep_price, penetration, _close_location(candle, level)))
+            continue
+        if reclaim and not reclaimed:
+            reclaimed = True
+            events.append(LiquidityEvent(level.price, level.type, level.timeframe, "RECLAIMED", candle.timestamp, None, 0.0, _close_location(candle, level)))
+    if swept and not reclaimed:
+        last = candles[-1]
+        events.append(LiquidityEvent(level.price, level.type, level.timeframe, "FAILED_RECLAIM", last.timestamp, None, 0.0, _close_location(last, level)))
+    return events
+
+
+def _level_status(events: list[LiquidityEvent]) -> str:
+    event_types = [event.event_type for event in events]
+    if "RECLAIMED" in event_types:
+        return "RECLAIMED"
+    if "SWEPT" in event_types:
+        return "SWEPT"
+    return "UNSWEPT"
 
 
 def _equal_levels(frame: MarketDataFrame, swings: list[Swing]) -> list[LiquidityLevel]:
@@ -279,25 +382,60 @@ def find_liquidity(frame: MarketDataFrame, structure: Structure) -> list[Liquidi
         level_type = "External Sell-side Liquidity" if frame.timeframe in HTF_TIMEFRAMES else "Internal Sell-side Liquidity"
         levels.append(LiquidityLevel(structure.last_swing_low.price, level_type, frame.timeframe, structure.last_swing_low.formed_at, "UNSWEPT"))
     levels.extend(_equal_levels(frame, structure.swings))
-    return [LiquidityLevel(level.price, level.type, level.timeframe, level.formed_at, _status_for_level(candles, level)) for level in levels]
+    return [LiquidityLevel(level.price, level.type, level.timeframe, level.formed_at, _level_status(_liquidity_events_for_level(candles, level))) for level in levels]
 
 
-def _displacement_strength(candles: list[Candle], index: int) -> float:
-    if index < 20:
-        return 0.0
-    average_range = sum(c.high - c.low for c in candles[index - 20:index]) / 20
-    if average_range <= 0:
-        return 0.0
-    return abs(candles[index].close - candles[index].open) / average_range
+def find_liquidity_events(frame: MarketDataFrame, levels: list[LiquidityLevel]) -> list[LiquidityEvent]:
+    candles = frame.closed_candles()
+    return [event for level in levels for event in _liquidity_events_for_level(candles, level)]
 
 
-def _is_displacement(candles: list[Candle], index: int, direction: str) -> bool:
-    if _displacement_strength(candles, index) < 1.0:
+def _median_body(candles: list[Candle]) -> float:
+    return median([abs(c.close - c.open) for c in candles]) if candles else 0.0
+
+
+def _median_range(candles: list[Candle]) -> float:
+    return median([c.high - c.low for c in candles]) if candles else 0.0
+
+
+def _has_fvg_at(candles: list[Candle], index: int, direction: str) -> bool:
+    if index < 2:
         return False
-    candle = candles[index]
-    if direction == "BULLISH":
-        return candle.close > candle.open and candle.close >= candle.low + (candle.high - candle.low) * 0.65
-    return candle.close < candle.open and candle.close <= candle.low + (candle.high - candle.low) * 0.35
+    first = candles[index - 2]
+    third = candles[index]
+    return third.low > first.high if direction == "BULLISH" else third.high < first.low
+
+
+def find_displacements(frame: MarketDataFrame, structure: Structure) -> list[DisplacementEvent]:
+    candles = frame.closed_candles()
+    events: list[DisplacementEvent] = []
+    structure_events = {event.timestamp: event for event in structure.events}
+    for index in range(20, len(candles)):
+        candle = candles[index]
+        direction = "BULLISH" if candle.close > candle.open else "BEARISH" if candle.close < candle.open else "NONE"
+        if direction == "NONE":
+            continue
+        previous = candles[index - 20:index]
+        median_body = _median_body(previous)
+        median_range = _median_range(previous)
+        body_ratio = abs(candle.close - candle.open) / median_body if median_body else 0.0
+        range_ratio = (candle.high - candle.low) / median_range if median_range else 0.0
+        close_near_extreme = (
+            candle.close >= candle.low + (candle.high - candle.low) * 0.75
+            if direction == "BULLISH"
+            else candle.close <= candle.low + (candle.high - candle.low) * 0.25
+        )
+        structure_broken = structure_events.get(candle.timestamp)
+        fvg_created = _has_fvg_at(candles, index, direction)
+        follow = candles[index + 1:index + 3]
+        follow_through = any(c.close > candle.close for c in follow) if direction == "BULLISH" else any(c.close < candle.close for c in follow)
+        components = sum([body_ratio >= 1.5, range_ratio >= 1.2, close_near_extreme, structure_broken is not None, fvg_created, follow_through])
+        if components < 3:
+            continue
+        strength = "STRONG" if components >= 5 else "VALID" if components >= 4 else "WEAK"
+        broken = f"{structure_broken.kind} {structure_broken.price:.2f}" if structure_broken else "NONE"
+        events.append(DisplacementEvent(direction, strength, candle.timestamp, broken, fvg_created, round(body_ratio, 3), round(range_ratio, 3), close_near_extreme, follow_through))
+    return events
 
 
 def _zone_status(candles: list[Candle], direction: str, lower: float, upper: float, formed_at: int) -> tuple[str, int]:
@@ -321,39 +459,46 @@ def _zone_status(candles: list[Candle], direction: str, lower: float, upper: flo
     return "FRESH", 0
 
 
-def find_fvgs(frame: MarketDataFrame) -> list[FairValueGap]:
+def find_fvgs(frame: MarketDataFrame, displacements: list[DisplacementEvent] | None = None) -> list[FairValueGap]:
     candles = frame.closed_candles()
+    displacement_by_time = {event.timestamp: event for event in displacements or [] if event.strength in {"VALID", "STRONG"}}
     gaps: list[FairValueGap] = []
     for index in range(2, len(candles)):
         first = candles[index - 2]
         third = candles[index]
+        related = displacement_by_time.get(third.timestamp)
         if third.low > first.high:
             status, touches = _zone_status(candles, "BULLISH", first.high, third.low, third.timestamp)
-            gaps.append(FairValueGap(third.low, first.high, (third.low + first.high) / 2, "BULLISH", frame.timeframe, third.timestamp, status, touches, _displacement_strength(candles, index)))
+            setup_type = "SETUP_FVG" if related and related.direction == "BULLISH" else "GENERIC_FVG"
+            gaps.append(FairValueGap(third.low, first.high, (third.low + first.high) / 2, "BULLISH", frame.timeframe, third.timestamp, status, touches, related.body_ratio if related else 0.0, setup_type, f"{frame.timeframe}:{third.timestamp}" if setup_type == "SETUP_FVG" else None))
         if third.high < first.low:
             status, touches = _zone_status(candles, "BEARISH", third.high, first.low, third.timestamp)
-            gaps.append(FairValueGap(first.low, third.high, (first.low + third.high) / 2, "BEARISH", frame.timeframe, third.timestamp, status, touches, _displacement_strength(candles, index)))
-    return gaps[-12:]
+            setup_type = "SETUP_FVG" if related and related.direction == "BEARISH" else "GENERIC_FVG"
+            gaps.append(FairValueGap(first.low, third.high, (first.low + third.high) / 2, "BEARISH", frame.timeframe, third.timestamp, status, touches, related.body_ratio if related else 0.0, setup_type, f"{frame.timeframe}:{third.timestamp}" if setup_type == "SETUP_FVG" else None))
+    return gaps[-16:]
 
 
-def find_order_blocks(frame: MarketDataFrame, structure: Structure) -> list[OrderBlock]:
-    if not structure.last_bos:
+def find_order_blocks(frame: MarketDataFrame, structure: Structure, displacements: list[DisplacementEvent] | None = None) -> list[OrderBlock]:
+    valid_displacements = [event for event in displacements or [] if event.strength in {"VALID", "STRONG"} and event.structure_broken != "NONE"]
+    if not valid_displacements:
         return []
     candles = frame.closed_candles()
+    candles_by_time = {c.timestamp: i for i, c in enumerate(candles)}
     blocks: list[OrderBlock] = []
-    for index, candle in enumerate(candles):
-        if not _is_displacement(candles, index, structure.last_bos.direction):
+    for event in valid_displacements:
+        index = candles_by_time.get(event.timestamp)
+        if index is None:
             continue
-        if structure.last_bos.direction == "BULLISH":
+        if event.direction == "BULLISH":
             candidates = [c for c in candles[max(0, index - 10):index] if c.close < c.open]
         else:
             candidates = [c for c in candles[max(0, index - 10):index] if c.close > c.open]
         if not candidates:
             continue
         source = candidates[-1]
-        status, touches = _zone_status(candles, structure.last_bos.direction, source.low, source.high, source.timestamp)
-        blocks.append(OrderBlock(source.high, source.low, (source.high + source.low) / 2, structure.last_bos.direction, frame.timeframe, source.timestamp, status, touches, _displacement_strength(candles, index)))
-    return blocks[-6:]
+        status, touches = _zone_status(candles, event.direction, source.low, source.high, source.timestamp)
+        blocks.append(OrderBlock(source.high, source.low, (source.high + source.low) / 2, event.direction, frame.timeframe, source.timestamp, status, touches, event.body_ratio))
+    return blocks[-8:]
 
 
 def _format_price(value: float | None) -> str:
@@ -361,9 +506,14 @@ def _format_price(value: float | None) -> str:
 
 
 def _break_text(event: BreakEvent | None) -> str:
-    if not event:
-        return "NONE"
-    return f"{event.direction} {event.price:.2f} @ {event.timestamp}"
+    return "NONE" if not event else f"{event.direction} {event.price:.2f} @ {event.timestamp}"
+
+
+def _event_timeline_text(structure: Structure) -> list[str]:
+    tail = structure.events[-4:]
+    lines = [f"{event.kind} {event.direction} @ {event.timestamp} price {event.price:.2f} ({event.previous_state}->{event.new_state})" for event in tail]
+    lines.append(f"CURRENT STRUCTURE = {structure.state}")
+    return lines
 
 
 def _swing_bias(structures: dict[str, Structure]) -> str:
@@ -389,16 +539,13 @@ def _protected_intact(bias: str, structure: Structure, price: float) -> bool:
 def _current_phase(bias: str, structures: dict[str, Structure], price: float) -> str:
     if bias == "NONE":
         return "RANGE"
-    h4 = structures["H4"]
-    if not _protected_intact(bias, h4, price):
+    if not _protected_intact(bias, structures["H4"], price):
         return "REVERSAL_CANDIDATE"
     tactical_states = [structures[timeframe].state for timeframe in TACTICAL_TIMEFRAMES]
     if any(state not in {bias, "RANGE"} for state in tactical_states):
         return "PULLBACK"
     if all(state == bias for state in tactical_states):
         return "CONTINUATION"
-    if any(state == "RANGE" for state in tactical_states):
-        return "TRANSITION"
     return "TRANSITION"
 
 
@@ -432,23 +579,108 @@ def _draw_text(name: str, level: LiquidityLevel | None, price: float, reason: st
     return f"{name}: {level.type} {level.price:.2f} on {level.timeframe}, distance={_distance(price, level.price):.4f}; {reason}"
 
 
-def _liquidity_draws(bias: str, phase: str, liquidity: list[LiquidityLevel], price: float) -> tuple[str, str]:
+def _liquidity_draws(bias: str, phase: str, liquidity: list[LiquidityLevel], price: float) -> tuple[str, str, LiquidityLevel | None]:
     unswept = [level for level in liquidity if level.status == "UNSWEPT"]
     if bias == "BULLISH":
         macro_candidates = [level for level in unswept if "External Buy-side" in level.type and level.price > price]
-        tactical_candidates = [level for level in unswept if "Sell-side" in level.type and level.price < price]
+        tactical_candidates = [level for level in liquidity if "Sell-side" in level.type and level.price < price]
     elif bias == "BEARISH":
         macro_candidates = [level for level in unswept if "External Sell-side" in level.type and level.price < price]
-        tactical_candidates = [level for level in unswept if "Buy-side" in level.type and level.price > price]
+        tactical_candidates = [level for level in liquidity if "Buy-side" in level.type and level.price > price]
     else:
-        return "Macro Draw: NONE (no valid swing bias)", "Tactical Draw: NONE (no valid swing bias)"
+        return "Macro Draw: NONE (no valid swing bias)", "Tactical Draw: NONE (no valid swing bias)", None
     macro = sorted(macro_candidates, key=lambda level: (0 if level.timeframe == "D1" else 1, _distance(price, level.price)))
     tactical = sorted(tactical_candidates, key=lambda level: (0 if level.timeframe == "H1" else 1, _distance(price, level.price)))
-    tactical_reason = f"{phase} phase can draw into opposite-side internal liquidity before trend continuation"
+    tactical_level = tactical[0] if tactical else None
     return (
         _draw_text("Macro Draw", macro[0] if macro else None, price, f"aligned with {bias} swing bias"),
-        _draw_text("Tactical Draw", tactical[0] if tactical else None, price, tactical_reason),
+        _draw_text("Tactical Draw", tactical_level, price, f"{phase} phase tactical objective"),
+        tactical_level,
     )
+
+
+def _events_for_level(events: list[LiquidityEvent], level: LiquidityLevel | None) -> list[LiquidityEvent]:
+    if not level:
+        return []
+    return [event for event in events if event.timeframe == level.timeframe and event.level_type == level.type and event.level_price == level.price]
+
+
+def _pullback_stage(phase: str, events: list[LiquidityEvent], displacements: list[DisplacementEvent], bias: str) -> str:
+    if phase != "PULLBACK":
+        return "SEEKING_LIQUIDITY"
+    event_types = [event.event_type for event in events]
+    if "FAILED_RECLAIM" in event_types and "RECLAIMED" not in event_types:
+        return "FAILED"
+    if "RECLAIMED" in event_types:
+        latest_reclaim = max(event.timestamp for event in events if event.event_type == "RECLAIMED")
+        if any(event.timestamp > latest_reclaim and event.direction == bias and event.strength in {"VALID", "STRONG"} for event in displacements):
+            return "REACCELERATION"
+        return "RECLAIMED"
+    if "SWEPT" in event_types:
+        return "LIQUIDITY_TAKEN"
+    return "SEEKING_LIQUIDITY"
+
+
+def _latest_liquidity_event(events: list[LiquidityEvent]) -> str:
+    if not events:
+        return "NONE"
+    event = max(events, key=lambda item: item.timestamp)
+    return (
+        f"{event.event_type} {event.level_type} {event.level_price:.2f} on {event.timeframe} "
+        f"@ {event.timestamp}; sweep_price={_format_price(event.sweep_price)}; "
+        f"penetration={event.penetration:.4f}; close_location={event.close_location}"
+    )
+
+
+def _latest_displacement(displacements: list[DisplacementEvent], bias: str) -> DisplacementEvent | None:
+    valid = [event for event in displacements if event.direction == bias and event.strength in {"VALID", "STRONG"}]
+    return max(valid, key=lambda event: event.timestamp) if valid else None
+
+
+def _displacement_text(event: DisplacementEvent | None) -> str:
+    if not event:
+        return "NONE"
+    return (
+        f"{event.direction} {event.strength} @ {event.timestamp}; structure_broken={event.structure_broken}; "
+        f"fvg_created={event.fvg_created}; body_ratio={event.body_ratio}; range_ratio={event.range_ratio}; "
+        f"close_near_extreme={event.close_near_extreme}; follow_through={event.follow_through}"
+    )
+
+
+def _contextual_mss(structures: dict[str, Structure], sweep: LiquidityEvent | None, displacement: DisplacementEvent | None, bias: str) -> BreakEvent | None:
+    if not sweep or not displacement:
+        return None
+    for timeframe in TRIGGER_TIMEFRAMES:
+        candidates = [
+            event for event in structures[timeframe].events
+            if event.kind == "MSS" and event.direction == bias and event.timestamp > sweep.timestamp and event.timestamp >= displacement.timestamp
+        ]
+        if candidates:
+            event = candidates[-1]
+            return BreakEvent(event.direction, event.price, event.timestamp, event.kind)
+    return None
+
+
+def _contextual_mss_text(event: BreakEvent | None, sweep: LiquidityEvent | None, displacement: DisplacementEvent | None) -> str:
+    if not event:
+        return "NONE"
+    return f"{event.direction} @ {event.timestamp}; related_sweep_id={sweep.timeframe}:{sweep.timestamp}; related_displacement_id={displacement.direction}:{displacement.timestamp}"
+
+
+def _setup_fvg(fvgs: list[FairValueGap], sweep: LiquidityEvent | None, displacement: DisplacementEvent | None, mss: BreakEvent | None, bias: str) -> FairValueGap | None:
+    if not sweep or not displacement or not mss:
+        return None
+    candidates = [
+        gap for gap in fvgs
+        if gap.setup_type == "SETUP_FVG" and gap.direction == bias and gap.formed_at >= displacement.timestamp and gap.formed_at >= sweep.timestamp
+    ]
+    return candidates[-1] if candidates else None
+
+
+def _setup_fvg_text(gap: FairValueGap | None) -> str:
+    if not gap:
+        return "NONE"
+    return f"{gap.direction} SETUP_FVG {gap.timeframe} {gap.lower:.2f}-{gap.upper:.2f} @ {gap.formed_at}; status={gap.status}"
 
 
 def _zone_distance(price: float, lower: float, upper: float) -> float:
@@ -457,22 +689,8 @@ def _zone_distance(price: float, lower: float, upper: float) -> float:
     return min(abs(price - lower), abs(price - upper)) / price
 
 
-def _make_pois(
-    price: float,
-    bias: str,
-    premium_discount: str,
-    fvgs: list[FairValueGap],
-    obs: list[OrderBlock],
-    structures: dict[str, Structure],
-    liquidity: list[LiquidityLevel],
-) -> list[POI]:
-    pois: list[POI] = []
-    for zone in fvgs:
-        pois.append(_score_poi("FVG", zone.direction, zone.timeframe, zone.lower, zone.upper, zone.midpoint, zone.formed_at, zone.status, zone.touch_count, zone.displacement_strength, price, bias, premium_discount, structures, liquidity))
-    for zone in obs:
-        pois.append(_score_poi("OB", zone.direction, zone.timeframe, zone.low, zone.high, zone.midpoint, zone.formed_at, zone.status, zone.touch_count, zone.displacement_strength, price, bias, premium_discount, structures, liquidity))
-    valid = [poi for poi in pois if poi.status not in {"MITIGATED", "INVALIDATED"}]
-    return sorted(valid, key=lambda poi: poi.score, reverse=True)
+def _zone_width_pct(price: float, lower: float, upper: float) -> float:
+    return abs(upper - lower) / price if price else 1.0
 
 
 def _score_poi(
@@ -486,45 +704,62 @@ def _score_poi(
     status: str,
     touch_count: int,
     displacement_strength: float,
+    setup_related: bool,
     price: float,
     bias: str,
     premium_discount: str,
-    structures: dict[str, Structure],
-    liquidity: list[LiquidityLevel],
+    liquidity_events: list[LiquidityEvent],
 ) -> POI:
+    width_pct = _zone_width_pct(price, lower, upper)
     distance = _zone_distance(price, lower, upper)
-    freshness = "FRESH" if status == "FRESH" else "USED"
     bias_alignment = direction == bias
     pd_alignment = (direction == "BULLISH" and premium_discount == "DISCOUNT") or (direction == "BEARISH" and premium_discount == "PREMIUM")
-    bos_relation = structures.get(timeframe).last_bos.direction if structures.get(timeframe) and structures[timeframe].last_bos else "NONE"
-    mss_relation = structures.get(timeframe).last_mss.direction if structures.get(timeframe) and structures[timeframe].last_mss else "NONE"
-    near_liquidity = any(_zone_distance(level.price, lower, upper) <= 0.002 for level in liquidity)
-    score = 0.0
-    score += {"D1": 5, "H4": 4, "H1": 3, "M15": 2, "M5": 1}.get(timeframe, 0)
-    score += 4 if bias_alignment else -3
+    near_event = any(_zone_distance(event.level_price, lower, upper) <= 0.002 for event in liquidity_events)
+    score = {"D1": 5, "H4": 4, "H1": 3, "M15": 2, "M5": 1}.get(timeframe, 0)
+    score += 5 if setup_related else 0
+    score += 4 if bias_alignment else -4
     score += 2 if pd_alignment else 0
-    score += 2 if status == "FRESH" else 1 if status in {"TOUCHED", "PARTIALLY_MITIGATED"} else -4
+    score += 2 if status == "FRESH" else 1 if status in {"TOUCHED", "PARTIALLY_MITIGATED"} else -5
     score += max(0.0, 2.0 - min(distance * 100, 2.0))
     score += min(displacement_strength, 3.0)
-    score += 1 if near_liquidity else 0
-    score -= touch_count * 0.5
+    score += 2 if near_event else 0
+    score -= touch_count * 0.75
+    if width_pct > 0.035:
+        score -= 10
     quality = {
         "timeframe": timeframe,
         "direction": direction,
-        "freshness": freshness,
+        "freshness": "FRESH" if status == "FRESH" else "USED",
         "touch_count": touch_count,
         "mitigation_status": status,
         "displacement_strength": round(displacement_strength, 3),
-        "bos_relation": bos_relation,
-        "mss_relation": mss_relation,
-        "fvg_overlap": zone_type == "FVG",
+        "displacement_related": setup_related,
         "premium_discount_alignment": pd_alignment,
-        "liquidity_proximity": near_liquidity,
+        "liquidity_event_proximity": near_event,
         "swing_bias_alignment": bias_alignment,
         "distance_to_price": round(distance, 5),
+        "width_pct": round(width_pct, 5),
     }
     label = f"{direction} {zone_type} {timeframe} {lower:.2f}-{upper:.2f}"
-    return POI(label, zone_type, direction, timeframe, lower, upper, midpoint, formed_at, status, quality, score)
+    return POI(label, zone_type, direction, timeframe, lower, upper, midpoint, formed_at, status, quality, score, width_pct)
+
+
+def _make_pois(
+    price: float,
+    bias: str,
+    premium_discount: str,
+    fvgs: list[FairValueGap],
+    obs: list[OrderBlock],
+    liquidity_events: list[LiquidityEvent],
+) -> list[POI]:
+    pois: list[POI] = []
+    for zone in fvgs:
+        setup_related = zone.setup_type == "SETUP_FVG"
+        pois.append(_score_poi("FVG", zone.direction, zone.timeframe, zone.lower, zone.upper, zone.midpoint, zone.formed_at, zone.status, zone.touch_count, zone.displacement_strength, setup_related, price, bias, premium_discount, liquidity_events))
+    for zone in obs:
+        pois.append(_score_poi("OB", zone.direction, zone.timeframe, zone.low, zone.high, zone.midpoint, zone.formed_at, zone.status, zone.touch_count, zone.displacement_strength, True, price, bias, premium_discount, liquidity_events))
+    valid = [poi for poi in pois if poi.status not in {"MITIGATED", "INVALIDATED"} and poi.width_pct <= 0.035]
+    return sorted(valid, key=lambda poi: poi.score, reverse=True)
 
 
 def _cluster_pois(pois: list[POI]) -> list[POI]:
@@ -543,18 +778,26 @@ def _cluster_pois(pois: list[POI]) -> list[POI]:
         if len(overlaps) == 1:
             clustered.append(poi)
             continue
-        lower = min(item.lower for item in overlaps)
-        upper = max(item.upper for item in overlaps)
+        lower = max(item.lower for item in overlaps)
+        upper = min(item.upper for item in overlaps)
+        if lower >= upper:
+            best = max(overlaps, key=lambda item: item.score)
+            clustered.append(best)
+            continue
         best = max(overlaps, key=lambda item: item.score)
-        clustered.append(POI(f"{best.direction} POI cluster {best.timeframe} {lower:.2f}-{upper:.2f}", "CLUSTER", best.direction, best.timeframe, lower, upper, (lower + upper) / 2, best.formed_at, best.status, best.quality, best.score + 1))
+        width_pct = _zone_width_pct(best.midpoint, lower, upper)
+        quality = dict(best.quality)
+        quality["cluster_method"] = "intersection"
+        quality["width_pct"] = round(width_pct, 5)
+        clustered.append(POI(f"{best.direction} POI intersection {best.timeframe} {lower:.2f}-{upper:.2f}", "CLUSTER", best.direction, best.timeframe, lower, upper, (lower + upper) / 2, best.formed_at, best.status, quality, best.score + 1, width_pct))
     return sorted(clustered, key=lambda poi: poi.score, reverse=True)
 
 
-def _poi_summary(pois: list[POI], bias: str) -> tuple[str, str, str]:
+def _poi_summary(pois: list[POI], bias: str) -> tuple[POI | None, POI | None, str]:
     clustered = _cluster_pois(pois)
     aligned = [poi for poi in clustered if poi.direction == bias]
     opposing = [poi for poi in clustered if poi.direction != bias]
-    primary = aligned[0] if aligned else clustered[0] if clustered else None
+    primary = aligned[0] if aligned else None
     secondary = aligned[1] if len(aligned) > 1 else opposing[0] if opposing else None
     conflict = "NONE"
     if primary:
@@ -562,11 +805,7 @@ def _poi_summary(pois: list[POI], bias: str) -> tuple[str, str, str]:
             if max(primary.lower, other.lower) <= min(primary.upper, other.upper):
                 conflict = f"POI_CONFLICT: {primary.label} overlaps {other.label}"
                 break
-    return (
-        _poi_text(primary),
-        _poi_text(secondary),
-        conflict,
-    )
+    return primary, secondary, conflict
 
 
 def _poi_text(poi: POI | None) -> str:
@@ -576,53 +815,77 @@ def _poi_text(poi: POI | None) -> str:
     return f"{poi.label}; status={poi.status}; score={poi.score:.2f}; {quality}"
 
 
+def _poi_width_text(poi: POI | None) -> str:
+    if not poi:
+        return "NONE"
+    flag = "POI_TOO_WIDE" if poi.width_pct > 0.035 else "OK"
+    return f"{poi.width_pct:.4%} {flag}"
+
+
+def _sequence_state(
+    swing_bias: str,
+    phase: str,
+    pullback_stage: str,
+    sweep: LiquidityEvent | None,
+    displacement: DisplacementEvent | None,
+    mss: BreakEvent | None,
+    setup_fvg: FairValueGap | None,
+) -> tuple[str, list[SequenceTransition]]:
+    transitions: list[SequenceTransition] = []
+
+    def add(new_state: str, timestamp: int, evidence: str) -> None:
+        previous = transitions[-1].new_state if transitions else "NONE"
+        transitions.append(SequenceTransition(previous, new_state, timestamp, evidence))
+
+    if swing_bias == "NONE" or phase == "REVERSAL_CANDIDATE":
+        add("INVALIDATED", 0, "no valid swing bias or structural invalidation")
+        return "INVALIDATED", transitions
+    add("SEEKING_LIQUIDITY", 0, f"pullback_stage={pullback_stage}")
+    if not sweep:
+        return "SEEKING_LIQUIDITY", transitions
+    add("LIQUIDITY_SWEPT", sweep.timestamp, f"{sweep.level_type} {sweep.level_price:.2f}")
+    if not displacement:
+        return "LIQUIDITY_SWEPT", transitions
+    add("DISPLACEMENT_CONFIRMED", displacement.timestamp, _displacement_text(displacement))
+    if not mss:
+        return "DISPLACEMENT_CONFIRMED", transitions
+    add("MSS_CONFIRMED", mss.timestamp, _break_text(mss))
+    if not setup_fvg:
+        return "MSS_CONFIRMED", transitions
+    add("SETUP_FVG_CREATED", setup_fvg.formed_at, _setup_fvg_text(setup_fvg))
+    add("RETEST_PENDING", setup_fvg.formed_at, "setup FVG awaits valid retest")
+    return "RETEST_PENDING", transitions
+
+
 def _state_model(
     swing_bias: str,
     phase: str,
-    price: float,
-    primary_poi: str,
-    tactical_draw: str,
-    structures: dict[str, Structure],
-    liquidity: list[LiquidityLevel],
-    frames: dict[str, MarketDataFrame],
+    pullback_stage: str,
+    primary_poi: POI | None,
+    sequence_state: str,
+    poi_conflict: str,
 ) -> tuple[str, list[str], list[str]]:
     missing: list[str] = []
     conflicts: list[str] = []
+    if poi_conflict != "NONE":
+        conflicts.append(poi_conflict)
     if swing_bias == "NONE":
-        return "NO_TRADE", ["valid D1/H4 swing bias"], ["no directional swing bias"]
-    if phase == "REVERSAL_CANDIDATE":
-        return "NO_TRADE", ["rebuild thesis after structural invalidation"], ["H4 structural protection is broken"]
-    has_primary = primary_poi != "NONE"
-    near_tactical = "NONE" not in tactical_draw and "distance=0." in tactical_draw
-    swept = any(level.status in {"SWEPT", "RECLAIMED"} for level in liquidity)
-    displacement = _has_displacement(frames, swing_bias)
-    trigger_break = any(
-        (structures[tf].last_mss and structures[tf].last_mss.direction == swing_bias)
-        or (structures[tf].last_bos and structures[tf].last_bos.direction == swing_bias)
-        for tf in TRIGGER_TIMEFRAMES
-    )
-    if not has_primary:
-        missing.append("thesis-aligned Primary POI")
-    if not swept:
-        missing.append("meaningful liquidity sweep")
-    if not displacement:
-        missing.append(f"{swing_bias.lower()} displacement")
-    if not trigger_break:
-        missing.append(f"{swing_bias.lower()} M15/M5 MSS or BOS confirmation")
-    if swept and displacement and trigger_break and has_primary:
+        return "NO_TRADE", ["valid D1/H4 swing bias"], conflicts + ["no directional swing bias"]
+    if phase == "REVERSAL_CANDIDATE" or sequence_state == "INVALIDATED":
+        return "NO_TRADE", ["rebuild thesis after structural invalidation"], conflicts + ["structural invalidation"]
+    if pullback_stage == "SEEKING_LIQUIDITY":
+        missing.append("tactical liquidity sweep")
+    if not primary_poi:
+        missing.append("high-quality thesis-aligned POI")
+    if sequence_state == "RETEST_PENDING":
         return "ARMED", missing, conflicts
-    if has_primary or near_tactical:
+    if sequence_state in {"MSS_CONFIRMED", "DISPLACEMENT_CONFIRMED"} or pullback_stage in {"LIQUIDITY_TAKEN", "RECLAIMED", "REACCELERATION"}:
+        if sequence_state != "MSS_CONFIRMED":
+            missing.append("contextual MSS/BOS confirmation")
+        if sequence_state not in {"MSS_CONFIRMED", "RETEST_PENDING"}:
+            missing.append("SETUP_FVG or valid OB")
         return "WATCH", missing, conflicts
     return "WAIT", missing, conflicts
-
-
-def _has_displacement(frames: dict[str, MarketDataFrame], direction: str) -> bool:
-    for timeframe in TRIGGER_TIMEFRAMES:
-        candles = frames[timeframe].closed_candles()
-        start = max(0, len(candles) - 10)
-        if any(_is_displacement(candles, index, direction) for index in range(start, len(candles))):
-            return True
-    return False
 
 
 def _thesis_status(previous_thesis: dict | None, d1_bias: str) -> str:
@@ -644,35 +907,53 @@ def _structure_text(structure: Structure) -> str:
 def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | None = None) -> Review:
     validate_generation(frames)
     structures = {timeframe: analyze_structure(frames[timeframe]) for timeframe in TIMEFRAMES}
-    liquidity = [level for timeframe in TIMEFRAMES for level in find_liquidity(frames[timeframe], structures[timeframe])]
-    fvgs = [gap for timeframe in TIMEFRAMES for gap in find_fvgs(frames[timeframe])]
-    order_blocks = [block for timeframe in TIMEFRAMES for block in find_order_blocks(frames[timeframe], structures[timeframe])]
+    liquidity_by_tf = {timeframe: find_liquidity(frames[timeframe], structures[timeframe]) for timeframe in TIMEFRAMES}
+    liquidity = [level for levels in liquidity_by_tf.values() for level in levels]
+    liquidity_events = [event for timeframe, levels in liquidity_by_tf.items() for event in find_liquidity_events(frames[timeframe], levels)]
+    displacements_by_tf = {timeframe: find_displacements(frames[timeframe], structures[timeframe]) for timeframe in TIMEFRAMES}
+    displacements = [event for events in displacements_by_tf.values() for event in events]
+    fvgs = [gap for timeframe in TIMEFRAMES for gap in find_fvgs(frames[timeframe], displacements_by_tf[timeframe])]
+    order_blocks = [block for timeframe in TIMEFRAMES for block in find_order_blocks(frames[timeframe], structures[timeframe], displacements_by_tf[timeframe])]
     price = _current_price(frames)
     swing_bias = _swing_bias(structures)
     phase = _current_phase(swing_bias, structures, price)
     premium_discount = _premium_discount(frames["H4"], structures["H4"])
-    macro_draw, tactical_draw = _liquidity_draws(swing_bias, phase, liquidity, price)
-    pois = _make_pois(price, swing_bias, premium_discount, fvgs, order_blocks, structures, liquidity)
+    macro_draw, tactical_draw, tactical_level = _liquidity_draws(swing_bias, phase, liquidity, price)
+    tactical_events = _events_for_level(liquidity_events, tactical_level)
+    pullback_stage = _pullback_stage(phase, tactical_events, displacements, swing_bias)
+    latest_tactical_sweep = max([event for event in tactical_events if event.event_type == "SWEPT"], key=lambda event: event.timestamp, default=None)
+    displacement = _latest_displacement([event for event in displacements if not latest_tactical_sweep or event.timestamp > latest_tactical_sweep.timestamp], swing_bias)
+    contextual_mss = _contextual_mss(structures, latest_tactical_sweep, displacement, swing_bias)
+    setup_fvg = _setup_fvg(fvgs, latest_tactical_sweep, displacement, contextual_mss, swing_bias)
+    sequence_state, transitions = _sequence_state(swing_bias, phase, pullback_stage, latest_tactical_sweep, displacement, contextual_mss, setup_fvg)
+    pois = _make_pois(price, swing_bias, premium_discount, fvgs, order_blocks, liquidity_events)
     primary_poi, secondary_poi, poi_conflict = _poi_summary(pois, swing_bias)
-    state, missing, conflicts = _state_model(swing_bias, phase, price, primary_poi, tactical_draw, structures, liquidity, frames)
-    if poi_conflict != "NONE":
-        conflicts.append(poi_conflict)
+    state, missing, conflicts = _state_model(swing_bias, phase, pullback_stage, primary_poi, sequence_state, poi_conflict)
     d1_bias = structures["D1"].state if structures["D1"].state in {"BULLISH", "BEARISH"} else "RANGE"
     return Review(
         Symbol=frames["D1"].symbol,
         Swing_Bias=swing_bias,
         Current_Phase=phase,
+        Pullback_Stage=pullback_stage,
         Market_Regime=_market_regime(phase),
         D1_Structure=_structure_text(structures["D1"]),
         H4_Structure=_structure_text(structures["H4"]),
         H1_Structure=_structure_text(structures["H1"]),
+        Last_Structure_Events={tf: _event_timeline_text(structures[tf]) for tf in TIMEFRAMES},
         Structural_Invalidation={tf: structures[tf].structural_invalidation_type for tf in TIMEFRAMES},
         Macro_Draw_on_Liquidity=macro_draw,
         Tactical_Draw_on_Liquidity=tactical_draw,
         Premium_Discount=premium_discount,
-        Primary_POI=primary_poi,
-        Secondary_POI=secondary_poi,
+        Liquidity_Event=_latest_liquidity_event(tactical_events),
+        Displacement=_displacement_text(displacement),
+        Contextual_MSS=_contextual_mss_text(contextual_mss, latest_tactical_sweep, displacement),
+        Setup_FVG=_setup_fvg_text(setup_fvg),
+        Primary_POI=_poi_text(primary_poi),
+        Secondary_POI=_poi_text(secondary_poi),
+        POI_Width=_poi_width_text(primary_poi),
         POI_Conflict=poi_conflict,
+        Sequence_State=sequence_state,
+        Sequence_Transitions=[asdict(transition) for transition in transitions],
         Preferred_Direction="LONG" if swing_bias == "BULLISH" else "SHORT" if swing_bias == "BEARISH" else "NONE",
         State=state,
         Thesis_Status=_thesis_status(previous_thesis, d1_bias),
@@ -685,6 +966,7 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
         Protected_High={tf: _format_price(structures[tf].protected_high) for tf in TIMEFRAMES},
         Protected_Low={tf: _format_price(structures[tf].protected_low) for tf in TIMEFRAMES},
         Liquidity=[asdict(level) for level in liquidity[-24:]],
+        Liquidity_Events=[asdict(event) for event in liquidity_events[-24:]],
         FVG=[asdict(gap) for gap in fvgs[-24:]],
         Order_Blocks=[asdict(block) for block in order_blocks[-12:]],
     )

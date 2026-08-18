@@ -63,6 +63,7 @@ def structure(state: str, protected_high: float | None = None, protected_low: fl
         last_swing_high=None,
         last_swing_low=None,
         swings=[],
+        events=[],
     )
 
 
@@ -108,16 +109,16 @@ class ReviewerV3Tests(unittest.TestCase):
         self.assertEqual(_current_phase("BULLISH", structures, price=99), "REVERSAL_CANDIDATE")
 
     def test_poi_ranking_prefers_aligned_primary(self) -> None:
-        aligned = POI("BULLISH FVG H4 95.00-100.00", "FVG", "BULLISH", "H4", 95, 100, 97.5, 1, "FRESH", {}, 10)
-        opposing = POI("BEARISH OB H1 101.00-105.00", "OB", "BEARISH", "H1", 101, 105, 103, 1, "FRESH", {}, 8)
+        aligned = POI("BULLISH FVG H4 95.00-100.00", "FVG", "BULLISH", "H4", 95, 100, 97.5, 1, "FRESH", {}, 10, 0.05)
+        opposing = POI("BEARISH OB H1 101.00-105.00", "OB", "BEARISH", "H1", 101, 105, 103, 1, "FRESH", {}, 8, 0.04)
         primary, secondary, conflict = _poi_summary([opposing, aligned], "BULLISH")
-        self.assertIn("BULLISH", primary)
-        self.assertIn("BEARISH", secondary)
+        self.assertEqual(primary.direction, "BULLISH")
+        self.assertEqual(secondary.direction, "BEARISH")
         self.assertEqual(conflict, "NONE")
 
     def test_poi_conflict_when_opposing_zones_overlap(self) -> None:
-        aligned = POI("BULLISH FVG H4 95.00-105.00", "FVG", "BULLISH", "H4", 95, 105, 100, 1, "FRESH", {}, 10)
-        opposing = POI("BEARISH OB H1 100.00-110.00", "OB", "BEARISH", "H1", 100, 110, 105, 1, "FRESH", {}, 8)
+        aligned = POI("BULLISH FVG H4 95.00-105.00", "FVG", "BULLISH", "H4", 95, 105, 100, 1, "FRESH", {}, 10, 0.1)
+        opposing = POI("BEARISH OB H1 100.00-110.00", "OB", "BEARISH", "H1", 100, 110, 105, 1, "FRESH", {}, 8, 0.1)
         _, _, conflict = _poi_summary([aligned, opposing], "BULLISH")
         self.assertIn("POI_CONFLICT", conflict)
 
@@ -126,7 +127,7 @@ class ReviewerV3Tests(unittest.TestCase):
             LiquidityLevel(140, "External Buy-side Liquidity", "D1", 1, "UNSWEPT"),
             LiquidityLevel(95, "Internal Sell-side Liquidity", "H1", 1, "UNSWEPT"),
         ]
-        macro, tactical = _liquidity_draws("BULLISH", "PULLBACK", liquidity, price=120)
+        macro, tactical, _ = _liquidity_draws("BULLISH", "PULLBACK", liquidity, price=120)
         self.assertIn("140.00", macro)
         self.assertIn("95.00", tactical)
 
