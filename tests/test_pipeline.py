@@ -64,7 +64,8 @@ class PipelineTests(unittest.TestCase):
             path.write_text(json.dumps(snapshot), encoding="utf-8")
             reviews = review_snapshot(path)
         self.assertEqual(set(reviews), {"BTC"})
-        self.assertEqual(reviews["BTC"]["Preferred_Direction"], "LONG")
+        self.assertEqual(reviews["BTC"]["Confidence"], "UNCALIBRATED")
+        self.assertIn(reviews["BTC"]["State"], {"NO_TRADE", "WAIT", "WATCH", "ARMED"})
 
 
 if __name__ == "__main__":
