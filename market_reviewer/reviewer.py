@@ -146,6 +146,11 @@ class SequenceTransition:
 @dataclass
 class Review:
     Symbol: str
+    Persistence_Version: str
+    State_Loaded_From: str
+    Active_Draw_Selected_At: str
+    Sequence_Started_At: str
+    Review_Timestamp: str
     Swing_Bias: str
     Current_Phase: str
     Pullback_Stage: str
@@ -667,6 +672,23 @@ def _active_target_selected_at(previous_thesis: dict | None) -> int:
     return 0
 
 
+def _latest_closed_timestamp(frames: dict[str, MarketDataFrame]) -> int:
+    return max(frame.latest_closed_candle_timestamp for frame in frames.values())
+
+
+def _sequence_started_at(previous_thesis: dict | None, active_selected_at: int) -> int:
+    if previous_thesis:
+        for key in ("sequence_started_at", "previous_review_timestamp"):
+            value = previous_thesis.get(key)
+            if value is None:
+                continue
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                continue
+    return active_selected_at
+
+
 def _resolve_tactical_targets(
     previous_thesis: dict | None,
     liquidity: list[LiquidityLevel],
@@ -687,6 +709,8 @@ def _resolve_tactical_targets(
         return previous, candidate, active_status, candidate_status, "NO", "ACTIVE_DRAW_LOCKED"
     if previous and previous_state == "INVALIDATED":
         return candidate, candidate, candidate_status, candidate_status, "YES", "THESIS_INVALIDATED"
+    if previous_thesis:
+        return candidate, candidate, candidate_status, candidate_status, "YES", "ACTIVE_DRAW_INITIALIZED_FROM_LEGACY_STATE"
     return candidate, candidate, candidate_status, candidate_status, "NO", "NO_PREVIOUS_ACTIVE_TARGET"
 
 
@@ -695,7 +719,7 @@ def _events_for_active_target(
     active_target: LiquidityLevel | None,
     selected_at: int,
 ) -> list[LiquidityEvent]:
-    return [event for event in _events_for_level(events, active_target) if event.timestamp >= selected_at]
+    return [event for event in _events_for_level(events, active_target) if event.timestamp > selected_at]
 
 
 def _add_active_target_events(
@@ -1017,7 +1041,7 @@ def _structure_text(structure: Structure) -> str:
     )
 
 
-def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | None = None) -> Review:
+def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | None = None, state_loaded_from: str = "NONE") -> Review:
     validate_generation(frames)
     structures = {timeframe: analyze_structure(frames[timeframe]) for timeframe in TIMEFRAMES}
     liquidity_by_tf = {timeframe: find_liquidity(frames[timeframe], structures[timeframe]) for timeframe in TIMEFRAMES}
@@ -1041,6 +1065,9 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
     )
     liquidity_events = _add_active_target_events(frames, liquidity_events, active_tactical_level)
     active_selected_at = _active_target_selected_at(previous_thesis)
+    if active_tactical_level and active_selected_at == 0:
+        active_selected_at = _latest_closed_timestamp(frames)
+    sequence_started_at = _sequence_started_at(previous_thesis, active_selected_at)
     tactical_events = _events_for_active_target(liquidity_events, active_tactical_level, active_selected_at)
     active_status = _draw_status(tactical_events)
     tactical_draw = _draw_text("Tactical Draw", active_tactical_level, price, f"{phase} phase active sequence target")
@@ -1056,6 +1083,11 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
     d1_bias = structures["D1"].state if structures["D1"].state in {"BULLISH", "BEARISH"} else "RANGE"
     return Review(
         Symbol=frames["D1"].symbol,
+        Persistence_Version="review-state.v2",
+        State_Loaded_From=state_loaded_from,
+        Active_Draw_Selected_At=str(active_selected_at) if active_tactical_level else "NONE",
+        Sequence_Started_At=str(sequence_started_at) if active_tactical_level else "NONE",
+        Review_Timestamp=str(_latest_closed_timestamp(frames)),
         Swing_Bias=swing_bias,
         Current_Phase=phase,
         Pullback_Stage=pullback_stage,

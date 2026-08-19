@@ -105,6 +105,26 @@ class ReviewerV41Tests(unittest.TestCase):
         self.assertEqual(pullback_stage, "SEEKING_LIQUIDITY")
         self.assertEqual(sequence_state, "SEEKING_LIQUIDITY")
 
+    def test_event_equal_selected_at_rejected(self) -> None:
+        active = level(1891.81)
+        equal_timestamp_sweep = event(1891.81, "SWEPT", timestamp=300)
+        self.assertEqual(_events_for_active_target([equal_timestamp_sweep], active, selected_at=300), [])
+
+    def test_event_after_selected_at_accepted(self) -> None:
+        active = level(1891.81)
+        next_sweep = event(1891.81, "SWEPT", timestamp=301)
+        self.assertEqual(_events_for_active_target([next_sweep], active, selected_at=300), [next_sweep])
+
+    def test_same_candle_sweep_rejected(self) -> None:
+        active = level(1891.81, formed_at=300)
+        same_candle_sweep = event(1891.81, "SWEPT", timestamp=300)
+        self.assertEqual(_events_for_active_target([same_candle_sweep], active, selected_at=300), [])
+
+    def test_next_closed_candle_sweep_accepted(self) -> None:
+        active = level(1891.81, formed_at=300)
+        next_candle_sweep = event(1891.81, "SWEPT", timestamp=360)
+        self.assertEqual(_events_for_active_target([next_candle_sweep], active, selected_at=300), [next_candle_sweep])
+
     def test_target_unlocks_after_invalidation(self) -> None:
         active = level(1891.81)
         candidate = level(1909.66, 300)
