@@ -21,7 +21,16 @@ def load_review_state(path: Path | None) -> tuple[dict[str, dict], str]:
         return {}, "NONE"
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("persistence_version") == PERSISTENCE_VERSION and isinstance(data.get("symbols"), dict):
-        return data["symbols"], STATE_SCHEMA
+        states = {
+            symbol: {
+                **state,
+                "persistence_version": PERSISTENCE_VERSION,
+                "state_schema": STATE_SCHEMA,
+            }
+            for symbol, state in data["symbols"].items()
+            if isinstance(state, dict)
+        }
+        return states, STATE_SCHEMA
     migrated = {
         symbol: {
             **state,
@@ -88,9 +97,10 @@ def _state_for_symbol(symbol: str, review: dict, previous: dict) -> dict:
             {
                 "previous_target": previous.get("active_tactical_draw"),
                 "new_target": active,
-                "timestamp": active_selected_at,
+                "timestamp": active_selected_at or _optional_int(review.get("Review_Timestamp")),
                 "reason": review.get("Target_Change_Reason"),
                 "structural_priority_evidence": review.get("Primary_POI", "NONE"),
+                "sequence_transition": review.get("Sequence_Transitions", [])[-1] if review.get("Sequence_Transitions") else None,
             }
         )
 
@@ -100,6 +110,8 @@ def _state_for_symbol(symbol: str, review: dict, previous: dict) -> dict:
         "symbol": symbol,
         "previous_bias": review.get("Swing_Bias"),
         "previous_regime": review.get("Market_Regime"),
+        "current_phase": review.get("Current_Phase"),
+        "previous_phase": previous.get("current_phase") or previous.get("previous_phase"),
         "previous_primary_target": review.get("Macro_Draw_on_Liquidity"),
         "previous_invalidation": review.get("Structural_Invalidation", {}).get("H1"),
         "previous_state": review.get("State"),
@@ -107,6 +119,7 @@ def _state_for_symbol(symbol: str, review: dict, previous: dict) -> dict:
         "previous_review_timestamp": _optional_int(review.get("Review_Timestamp")) or _review_timestamp_from_transition(last_transition),
         "active_tactical_draw": active,
         "candidate_tactical_draw": candidate,
+        "sequence_id": review.get("Sequence_ID"),
         "sequence_state": review.get("Sequence_State"),
         "sequence_started_at": sequence_started_at,
         "last_sequence_transition": last_transition,

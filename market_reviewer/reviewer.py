@@ -150,6 +150,7 @@ class Review:
     State_Loaded_From: str
     Active_Draw_Selected_At: str
     Sequence_Started_At: str
+    Sequence_ID: str
     Review_Timestamp: str
     Swing_Bias: str
     Current_Phase: str
@@ -1010,20 +1011,105 @@ def _state_model(
         return "NO_TRADE", ["valid D1/H4 swing bias"], conflicts + ["no directional swing bias"]
     if phase == "REVERSAL_CANDIDATE" or sequence_state == "INVALIDATED":
         return "NO_TRADE", ["rebuild thesis after structural invalidation"], conflicts + ["structural invalidation"]
-    if pullback_stage == "SEEKING_LIQUIDITY":
+    if sequence_state == "EXPIRED_NO_TRIGGER":
+        if not primary_poi:
+            missing.append("high-quality thesis-aligned POI")
+        missing.append("new pullback sequence")
+        return "WAIT", missing, conflicts
+    if sequence_state == "SEEKING_LIQUIDITY":
         missing.append("tactical liquidity sweep")
+    elif sequence_state == "LIQUIDITY_SWEPT":
+        missing.extend(["valid displacement", "contextual MSS/BOS confirmation", "SETUP_FVG or valid OB"])
+    elif sequence_state == "DISPLACEMENT_CONFIRMED":
+        missing.extend(["contextual MSS/BOS confirmation", "SETUP_FVG or valid OB"])
+    elif sequence_state == "MSS_CONFIRMED":
+        missing.append("SETUP_FVG or valid OB")
     if not primary_poi:
         missing.append("high-quality thesis-aligned POI")
     if sequence_state == "RETEST_PENDING":
         return "ARMED", missing, conflicts
-    if sequence_state in {"MSS_CONFIRMED", "DISPLACEMENT_CONFIRMED"} or pullback_stage in {"LIQUIDITY_TAKEN", "RECLAIMED", "REACCELERATION"}:
-        if sequence_state != "MSS_CONFIRMED":
-            missing.append("contextual MSS/BOS confirmation")
-        if sequence_state not in {"MSS_CONFIRMED", "RETEST_PENDING"}:
-            missing.append("SETUP_FVG or valid OB")
+    if sequence_state in {"LIQUIDITY_SWEPT", "MSS_CONFIRMED", "DISPLACEMENT_CONFIRMED"} or pullback_stage in {"LIQUIDITY_TAKEN", "RECLAIMED", "REACCELERATION"}:
         return "WATCH", missing, conflicts
     return "WAIT", missing, conflicts
 
+
+def _is_v2_state(previous_thesis: dict | None) -> bool:
+    return bool(previous_thesis and (previous_thesis.get("state_schema") == "review-state.v2" or previous_thesis.get("persistence_version") == 2))
+
+
+def _previous_sequence_state(previous_thesis: dict | None) -> str:
+    return str((previous_thesis or {}).get("sequence_state") or (previous_thesis or {}).get("previous_sequence_state") or "")
+
+def _sequence_id(symbol: str, previous_thesis: dict | None) -> str:
+    if previous_thesis and previous_thesis.get("sequence_id"):
+        return str(previous_thesis["sequence_id"])
+    return f"{symbol}-seq-0001"
+
+
+def _next_sequence_id(symbol: str, previous_thesis: dict | None) -> str:
+    current = _sequence_id(symbol, previous_thesis)
+    prefix = f"{symbol}-seq-"
+    if current.startswith(prefix):
+        try:
+            return f"{prefix}{int(current.removeprefix(prefix)) + 1:04d}"
+        except ValueError:
+            pass
+    return f"{prefix}0001"
+
+
+def _has_htf_continuation_evidence(
+    structures: dict[str, Structure],
+    swing_bias: str,
+    after_timestamp: int,
+    displacement: DisplacementEvent | None = None,
+) -> bool:
+    if structures["H1"].state != swing_bias:
+        return False
+    tactical_aligned = structures["M15"].state == swing_bias and structures["M5"].state == swing_bias
+    if not tactical_aligned:
+        return False
+    for timeframe in ("H1", "H4", "D1"):
+        for event in (structures[timeframe].last_bos, structures[timeframe].last_mss):
+            if event and event.direction == swing_bias and event.timestamp > after_timestamp:
+                return True
+    if (
+        displacement
+        and displacement.direction == swing_bias
+        and displacement.timestamp > after_timestamp
+        and displacement.fvg_created
+        and displacement.strength in {"VALID", "STRONG"}
+    ):
+        return True
+    return False
+
+
+def _should_expire_sequence(
+    previous_thesis: dict | None,
+    phase: str,
+    active_target: LiquidityLevel | None,
+    latest_sweep: LiquidityEvent | None,
+    structures: dict[str, Structure],
+    swing_bias: str,
+    sequence_started_at: int,
+    displacement: DisplacementEvent | None = None,
+) -> bool:
+    if not previous_thesis:
+        return False
+    previous_phase = previous_thesis.get("current_phase") or previous_thesis.get("previous_phase")
+    previous_sequence = previous_thesis.get("sequence_state") or previous_thesis.get("previous_sequence_state")
+    return (
+        previous_phase == "PULLBACK"
+        and previous_sequence == "SEEKING_LIQUIDITY"
+        and active_target is not None
+        and latest_sweep is None
+        and phase == "CONTINUATION"
+        and _has_htf_continuation_evidence(structures, swing_bias, sequence_started_at, displacement)
+    )
+
+
+def _expired_transition(active_target: LiquidityLevel, phase: str, timestamp: int) -> SequenceTransition:
+    evidence = f"old_active_target={active_target.type} {active_target.price:.2f} on {active_target.timeframe}; phase={phase}; continuation confirmed without active sweep"
+    return SequenceTransition("SEEKING_LIQUIDITY", "EXPIRED_NO_TRIGGER", timestamp, evidence)
 
 def _thesis_status(previous_thesis: dict | None, d1_bias: str) -> str:
     if previous_thesis is None:
@@ -1071,12 +1157,36 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
     tactical_events = _events_for_active_target(liquidity_events, active_tactical_level, active_selected_at)
     active_status = _draw_status(tactical_events)
     tactical_draw = _draw_text("Tactical Draw", active_tactical_level, price, f"{phase} phase active sequence target")
+    sequence_id = _sequence_id(frames["D1"].symbol, previous_thesis)
+    if _is_v2_state(previous_thesis) and not _previous_active_target(previous_thesis, liquidity) and _previous_sequence_state(previous_thesis) == "EXPIRED_NO_TRIGGER":
+        if phase == "PULLBACK" and active_tactical_level:
+            sequence_id = _next_sequence_id(frames["D1"].symbol, previous_thesis)
+            sequence_started_at = active_selected_at
+            target_changed = "YES"
+            target_reason = "NEW_SEQUENCE_STARTED"
+        else:
+            active_tactical_level = None
+            tactical_events = []
+            active_status = "NONE"
+            tactical_draw = _draw_text("Tactical Draw", None, price, "awaiting new pullback sequence")
+            target_changed = "NO"
+            target_reason = "AWAITING_NEW_PULLBACK"
     pullback_stage = _pullback_stage(phase, tactical_events, displacements, swing_bias)
     latest_tactical_sweep = max([event for event in tactical_events if event.event_type == "SWEPT"], key=lambda event: event.timestamp, default=None)
     displacement = _latest_displacement([event for event in displacements if not latest_tactical_sweep or event.timestamp > latest_tactical_sweep.timestamp], swing_bias)
     contextual_mss = _contextual_mss(structures, latest_tactical_sweep, displacement, swing_bias)
     setup_fvg = _setup_fvg(fvgs, latest_tactical_sweep, displacement, contextual_mss, swing_bias)
     sequence_state, transitions = _sequence_state(swing_bias, phase, pullback_stage, latest_tactical_sweep, displacement, contextual_mss, setup_fvg)
+    if _should_expire_sequence(previous_thesis, phase, active_tactical_level, latest_tactical_sweep, structures, swing_bias, sequence_started_at, displacement):
+        expired_target = active_tactical_level
+        sequence_state = "EXPIRED_NO_TRIGGER"
+        transitions = [SequenceTransition("NONE", "SEEKING_LIQUIDITY", 0, "pullback sequence expired before active liquidity sweep"), _expired_transition(expired_target, phase, _latest_closed_timestamp(frames))]
+        active_tactical_level = None
+        tactical_events = []
+        active_status = "NONE"
+        tactical_draw = _draw_text("Tactical Draw", None, price, "expired before active liquidity sweep")
+        target_changed = "YES"
+        target_reason = "EXPIRED_NO_TRIGGER"
     pois = _make_pois(price, swing_bias, premium_discount, fvgs, order_blocks, liquidity_events)
     primary_poi, secondary_poi, poi_conflict = _poi_summary(pois, swing_bias)
     state, missing, conflicts = _state_model(swing_bias, phase, pullback_stage, primary_poi, sequence_state, poi_conflict)
@@ -1086,7 +1196,8 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
         Persistence_Version="review-state.v2",
         State_Loaded_From=state_loaded_from,
         Active_Draw_Selected_At=str(active_selected_at) if active_tactical_level else "NONE",
-        Sequence_Started_At=str(sequence_started_at) if active_tactical_level else "NONE",
+        Sequence_Started_At=str(sequence_started_at) if active_tactical_level or sequence_state == "EXPIRED_NO_TRIGGER" else "NONE",
+        Sequence_ID=sequence_id,
         Review_Timestamp=str(_latest_closed_timestamp(frames)),
         Swing_Bias=swing_bias,
         Current_Phase=phase,
