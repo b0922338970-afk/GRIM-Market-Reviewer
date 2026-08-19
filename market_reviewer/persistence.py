@@ -85,7 +85,7 @@ def _state_for_symbol(symbol: str, review: dict, previous: dict) -> dict:
         candidate["status"] = review.get("Candidate_Draw_Status", "NONE")
 
     transitions = review.get("Sequence_Transitions", [])
-    last_transition = transitions[-1] if transitions else {
+    last_transition = transitions[-1] if transitions else previous.get("last_sequence_transition") or {
         "previous_state": "NONE",
         "new_state": review.get("Sequence_State", "UNKNOWN"),
         "timestamp": sequence_started_at or 0,

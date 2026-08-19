@@ -151,6 +151,14 @@ class Review:
     Active_Draw_Selected_At: str
     Sequence_Started_At: str
     Sequence_ID: str
+    Loaded_Sequence_ID: str
+    Loaded_Sequence_State: str
+    Loaded_Active_Target: str
+    Current_Sequence_ID: str
+    Current_Sequence_State: str
+    Current_Active_Target: str
+    Transition: str
+    Transition_Reason: str
     Review_Timestamp: str
     Swing_Bias: str
     Current_Phase: str
@@ -705,7 +713,8 @@ def _resolve_tactical_targets(
         new_target = _find_matching_level(liquidity, reselection.get("new_target"))
         if new_target:
             return new_target, candidate, _draw_status(_events_for_level(liquidity_events, new_target)), candidate_status, "YES", "TARGET_RESELECTED"
-    if previous and previous_state in {"", "SEEKING_LIQUIDITY"}:
+    active_states = {"", "SEEKING_LIQUIDITY", "LIQUIDITY_SWEPT", "DISPLACEMENT_CONFIRMED", "MSS_CONFIRMED", "SETUP_FVG_CREATED", "RETEST_PENDING"}
+    if previous and previous_state in active_states:
         active_status = _draw_status(_events_for_level(liquidity_events, previous))
         return previous, candidate, active_status, candidate_status, "NO", "ACTIVE_DRAW_LOCKED"
     if previous and previous_state == "INVALIDATED":
@@ -1111,6 +1120,54 @@ def _expired_transition(active_target: LiquidityLevel, phase: str, timestamp: in
     evidence = f"old_active_target={active_target.type} {active_target.price:.2f} on {active_target.timeframe}; phase={phase}; continuation confirmed without active sweep"
     return SequenceTransition("SEEKING_LIQUIDITY", "EXPIRED_NO_TRIGGER", timestamp, evidence)
 
+SEQUENCE_ORDER = {
+    "SEEKING_LIQUIDITY": 1,
+    "LIQUIDITY_SWEPT": 2,
+    "DISPLACEMENT_CONFIRMED": 3,
+    "MSS_CONFIRMED": 4,
+    "SETUP_FVG_CREATED": 5,
+    "RETEST_PENDING": 6,
+}
+TERMINAL_SEQUENCE_STATES = {"EXPIRED_NO_TRIGGER", "INVALIDATED"}
+
+
+def _last_transition_for_state(transitions: list[SequenceTransition], state: str) -> SequenceTransition | None:
+    for transition in reversed(transitions):
+        if transition.new_state == state:
+            return transition
+    return None
+
+
+def _resolve_sequence_lifecycle(
+    previous_thesis: dict | None,
+    sequence_id: str,
+    computed_state: str,
+    computed_transitions: list[SequenceTransition],
+    new_sequence_started: bool,
+) -> tuple[str, list[SequenceTransition], str, str]:
+    previous_state = _previous_sequence_state(previous_thesis)
+    if not previous_state or not _is_v2_state(previous_thesis) or new_sequence_started:
+        transition = _last_transition_for_state(computed_transitions, computed_state)
+        reason = transition.evidence if transition else "new sequence initialized"
+        return computed_state, computed_transitions, f"NEW_SEQUENCE {sequence_id}", reason
+    if previous_state in TERMINAL_SEQUENCE_STATES:
+        return previous_state, [], "NO_TRANSITION", f"terminal persisted state {previous_state}"
+    if computed_state == "INVALIDATED":
+        transition = _last_transition_for_state(computed_transitions, "INVALIDATED") or SequenceTransition(previous_state, "INVALIDATED", 0, "structural invalidation")
+        return "INVALIDATED", [transition], f"{previous_state} -> INVALIDATED", transition.evidence
+    if previous_state == "SEEKING_LIQUIDITY" and computed_state == "EXPIRED_NO_TRIGGER":
+        transition = _last_transition_for_state(computed_transitions, "EXPIRED_NO_TRIGGER") or SequenceTransition(previous_state, "EXPIRED_NO_TRIGGER", 0, "sequence expired before active liquidity sweep")
+        return "EXPIRED_NO_TRIGGER", [transition], "SEEKING_LIQUIDITY -> EXPIRED_NO_TRIGGER", transition.evidence
+    previous_rank = SEQUENCE_ORDER.get(previous_state, 0)
+    computed_rank = SEQUENCE_ORDER.get(computed_state, 0)
+    if computed_rank > previous_rank:
+        transition = _last_transition_for_state(computed_transitions, computed_state) or SequenceTransition(previous_state, computed_state, 0, "forward lifecycle evidence")
+        if transition.previous_state != previous_state:
+            transition = SequenceTransition(previous_state, transition.new_state, transition.timestamp, transition.evidence)
+        return computed_state, [transition], f"{previous_state} -> {computed_state}", transition.evidence
+    return previous_state, [], "NO_TRANSITION", f"persisted state {previous_state} remains authoritative"
+
+
 def _thesis_status(previous_thesis: dict | None, d1_bias: str) -> str:
     if previous_thesis is None:
         return "THESIS_INITIALIZED"
@@ -1158,12 +1215,17 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
     active_status = _draw_status(tactical_events)
     tactical_draw = _draw_text("Tactical Draw", active_tactical_level, price, f"{phase} phase active sequence target")
     sequence_id = _sequence_id(frames["D1"].symbol, previous_thesis)
+    loaded_sequence_id = str((previous_thesis or {}).get("sequence_id") or "NONE")
+    loaded_sequence_state = _previous_sequence_state(previous_thesis) or "NONE"
+    loaded_active_target = _previous_active_target(previous_thesis, liquidity)
+    new_sequence_started = False
     if _is_v2_state(previous_thesis) and not _previous_active_target(previous_thesis, liquidity) and _previous_sequence_state(previous_thesis) == "EXPIRED_NO_TRIGGER":
         if phase == "PULLBACK" and active_tactical_level:
             sequence_id = _next_sequence_id(frames["D1"].symbol, previous_thesis)
             sequence_started_at = active_selected_at
             target_changed = "YES"
             target_reason = "NEW_SEQUENCE_STARTED"
+            new_sequence_started = True
         else:
             active_tactical_level = None
             tactical_events = []
@@ -1187,6 +1249,21 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
         tactical_draw = _draw_text("Tactical Draw", None, price, "expired before active liquidity sweep")
         target_changed = "YES"
         target_reason = "EXPIRED_NO_TRIGGER"
+    sequence_state, transitions, transition, transition_reason = _resolve_sequence_lifecycle(
+        previous_thesis,
+        sequence_id,
+        sequence_state,
+        transitions,
+        new_sequence_started,
+    )
+    if sequence_state == "EXPIRED_NO_TRIGGER" and not new_sequence_started:
+        active_tactical_level = None
+        tactical_events = []
+        active_status = "NONE"
+        tactical_draw = _draw_text("Tactical Draw", None, price, "expired sequence awaiting new pullback genesis")
+        if target_reason not in {"EXPIRED_NO_TRIGGER", "AWAITING_NEW_PULLBACK"}:
+            target_changed = "NO"
+            target_reason = "AWAITING_NEW_PULLBACK"
     pois = _make_pois(price, swing_bias, premium_discount, fvgs, order_blocks, liquidity_events)
     primary_poi, secondary_poi, poi_conflict = _poi_summary(pois, swing_bias)
     state, missing, conflicts = _state_model(swing_bias, phase, pullback_stage, primary_poi, sequence_state, poi_conflict)
@@ -1198,6 +1275,14 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
         Active_Draw_Selected_At=str(active_selected_at) if active_tactical_level else "NONE",
         Sequence_Started_At=str(sequence_started_at) if active_tactical_level or sequence_state == "EXPIRED_NO_TRIGGER" else "NONE",
         Sequence_ID=sequence_id,
+        Loaded_Sequence_ID=loaded_sequence_id,
+        Loaded_Sequence_State=loaded_sequence_state,
+        Loaded_Active_Target=_level_text(loaded_active_target, price),
+        Current_Sequence_ID=sequence_id,
+        Current_Sequence_State=sequence_state,
+        Current_Active_Target=_level_text(active_tactical_level, price),
+        Transition=transition,
+        Transition_Reason=transition_reason,
         Review_Timestamp=str(_latest_closed_timestamp(frames)),
         Swing_Bias=swing_bias,
         Current_Phase=phase,
