@@ -157,6 +157,12 @@ class Review:
     Structural_Invalidation: dict[str, str]
     Macro_Draw_on_Liquidity: str
     Tactical_Draw_on_Liquidity: str
+    Active_Tactical_Draw: str
+    Candidate_Tactical_Draw: str
+    Active_Draw_Status: str
+    Candidate_Draw_Status: str
+    Target_Changed: str
+    Target_Change_Reason: str
     Premium_Discount: str
     Liquidity_Event: str
     Displacement: str
@@ -579,6 +585,12 @@ def _draw_text(name: str, level: LiquidityLevel | None, price: float, reason: st
     return f"{name}: {level.type} {level.price:.2f} on {level.timeframe}, distance={_distance(price, level.price):.4f}; {reason}"
 
 
+def _level_text(level: LiquidityLevel | None, price: float) -> str:
+    if not level:
+        return "NONE"
+    return f"{level.type} {level.price:.2f} on {level.timeframe}, formed_at={level.formed_at}, distance={_distance(price, level.price):.4f}"
+
+
 def _liquidity_draws(bias: str, phase: str, liquidity: list[LiquidityLevel], price: float) -> tuple[str, str, LiquidityLevel | None]:
     unswept = [level for level in liquidity if level.status == "UNSWEPT"]
     if bias == "BULLISH":
@@ -603,6 +615,107 @@ def _events_for_level(events: list[LiquidityEvent], level: LiquidityLevel | None
     if not level:
         return []
     return [event for event in events if event.timeframe == level.timeframe and event.level_type == level.type and event.level_price == level.price]
+
+
+def _find_matching_level(liquidity: list[LiquidityLevel], raw: dict | None) -> LiquidityLevel | None:
+    if not raw:
+        return None
+    try:
+        price = float(raw["price"])
+        timeframe = str(raw["timeframe"])
+        level_type = str(raw["type"])
+    except (KeyError, TypeError, ValueError):
+        return None
+    for level in liquidity:
+        if level.timeframe == timeframe and level.type == level_type and abs(level.price - price) < 0.005:
+            return level
+    return LiquidityLevel(price, level_type, timeframe, int(raw.get("formed_at", 0)), "UNSWEPT")
+
+
+def _previous_active_target(previous_thesis: dict | None, liquidity: list[LiquidityLevel]) -> LiquidityLevel | None:
+    if not previous_thesis:
+        return None
+    raw = previous_thesis.get("active_tactical_draw") or previous_thesis.get("previous_active_tactical_draw")
+    return _find_matching_level(liquidity, raw)
+
+
+def _draw_status(events: list[LiquidityEvent]) -> str:
+    event_types = [event.event_type for event in events]
+    if "RECLAIMED" in event_types:
+        return "RECLAIMED"
+    if "SWEPT" in event_types:
+        return "SWEPT"
+    if "TOUCHED" in event_types:
+        return "TOUCHED"
+    if "APPROACHED" in event_types:
+        return "APPROACHED"
+    return "NONE"
+
+
+def _active_target_selected_at(previous_thesis: dict | None) -> int:
+    if not previous_thesis:
+        return 0
+    raw_target = previous_thesis.get("active_tactical_draw") or previous_thesis.get("previous_active_tactical_draw") or {}
+    for key in ("selected_at", "active_tactical_draw_selected_at", "tactical_draw_selected_at", "previous_review_timestamp", "review_timestamp"):
+        value = raw_target.get(key) if isinstance(raw_target, dict) and key in raw_target else previous_thesis.get(key)
+        if value is None:
+            continue
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            continue
+    return 0
+
+
+def _resolve_tactical_targets(
+    previous_thesis: dict | None,
+    liquidity: list[LiquidityLevel],
+    candidate: LiquidityLevel | None,
+    liquidity_events: list[LiquidityEvent],
+    price: float,
+) -> tuple[LiquidityLevel | None, LiquidityLevel | None, str, str, str, str]:
+    previous = _previous_active_target(previous_thesis, liquidity)
+    previous_state = str((previous_thesis or {}).get("previous_sequence_state") or (previous_thesis or {}).get("sequence_state") or "")
+    candidate_status = _draw_status(_events_for_level(liquidity_events, candidate))
+    reselection = (previous_thesis or {}).get("target_reselection")
+    if reselection:
+        new_target = _find_matching_level(liquidity, reselection.get("new_target"))
+        if new_target:
+            return new_target, candidate, _draw_status(_events_for_level(liquidity_events, new_target)), candidate_status, "YES", "TARGET_RESELECTED"
+    if previous and previous_state in {"", "SEEKING_LIQUIDITY"}:
+        active_status = _draw_status(_events_for_level(liquidity_events, previous))
+        return previous, candidate, active_status, candidate_status, "NO", "ACTIVE_DRAW_LOCKED"
+    if previous and previous_state == "INVALIDATED":
+        return candidate, candidate, candidate_status, candidate_status, "YES", "THESIS_INVALIDATED"
+    return candidate, candidate, candidate_status, candidate_status, "NO", "NO_PREVIOUS_ACTIVE_TARGET"
+
+
+def _events_for_active_target(
+    events: list[LiquidityEvent],
+    active_target: LiquidityLevel | None,
+    selected_at: int,
+) -> list[LiquidityEvent]:
+    return [event for event in _events_for_level(events, active_target) if event.timestamp >= selected_at]
+
+
+def _add_active_target_events(
+    frames: dict[str, MarketDataFrame],
+    liquidity_events: list[LiquidityEvent],
+    active_target: LiquidityLevel | None,
+) -> list[LiquidityEvent]:
+    if not active_target or active_target.timeframe not in frames:
+        return liquidity_events
+    active_events = find_liquidity_events(frames[active_target.timeframe], [active_target])
+    seen = {
+        (event.level_price, event.level_type, event.timeframe, event.event_type, event.timestamp)
+        for event in liquidity_events
+    }
+    merged = list(liquidity_events)
+    for event in active_events:
+        key = (event.level_price, event.level_type, event.timeframe, event.event_type, event.timestamp)
+        if key not in seen:
+            merged.append(event)
+    return merged
 
 
 def _pullback_stage(phase: str, events: list[LiquidityEvent], displacements: list[DisplacementEvent], bias: str) -> str:
@@ -918,8 +1031,19 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
     swing_bias = _swing_bias(structures)
     phase = _current_phase(swing_bias, structures, price)
     premium_discount = _premium_discount(frames["H4"], structures["H4"])
-    macro_draw, tactical_draw, tactical_level = _liquidity_draws(swing_bias, phase, liquidity, price)
-    tactical_events = _events_for_level(liquidity_events, tactical_level)
+    macro_draw, candidate_tactical_draw, candidate_tactical_level = _liquidity_draws(swing_bias, phase, liquidity, price)
+    active_tactical_level, candidate_tactical_level, active_status, candidate_status, target_changed, target_reason = _resolve_tactical_targets(
+        previous_thesis,
+        liquidity,
+        candidate_tactical_level,
+        liquidity_events,
+        price,
+    )
+    liquidity_events = _add_active_target_events(frames, liquidity_events, active_tactical_level)
+    active_selected_at = _active_target_selected_at(previous_thesis)
+    tactical_events = _events_for_active_target(liquidity_events, active_tactical_level, active_selected_at)
+    active_status = _draw_status(tactical_events)
+    tactical_draw = _draw_text("Tactical Draw", active_tactical_level, price, f"{phase} phase active sequence target")
     pullback_stage = _pullback_stage(phase, tactical_events, displacements, swing_bias)
     latest_tactical_sweep = max([event for event in tactical_events if event.event_type == "SWEPT"], key=lambda event: event.timestamp, default=None)
     displacement = _latest_displacement([event for event in displacements if not latest_tactical_sweep or event.timestamp > latest_tactical_sweep.timestamp], swing_bias)
@@ -943,6 +1067,12 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
         Structural_Invalidation={tf: structures[tf].structural_invalidation_type for tf in TIMEFRAMES},
         Macro_Draw_on_Liquidity=macro_draw,
         Tactical_Draw_on_Liquidity=tactical_draw,
+        Active_Tactical_Draw=_level_text(active_tactical_level, price),
+        Candidate_Tactical_Draw=_level_text(candidate_tactical_level, price),
+        Active_Draw_Status=active_status,
+        Candidate_Draw_Status=candidate_status,
+        Target_Changed=target_changed,
+        Target_Change_Reason=target_reason,
         Premium_Discount=premium_discount,
         Liquidity_Event=_latest_liquidity_event(tactical_events),
         Displacement=_displacement_text(displacement),
