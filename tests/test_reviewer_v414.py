@@ -8,7 +8,7 @@ from pathlib import Path
 
 os._walk_symlinks_as_files = False
 
-from market_reviewer.persistence import atomic_write_json, load_review_state
+from market_reviewer.persistence import atomic_write_json, load_review_state, persist_review_state
 from market_reviewer.pipeline import review_snapshot
 from market_reviewer.reviewer import (
     BreakEvent,
@@ -16,8 +16,10 @@ from market_reviewer.reviewer import (
     FairValueGap,
     LiquidityEvent,
     LiquidityLevel,
+    SequenceTransition,
     _liquidity_id,
     _resolve_tactical_targets,
+    _resolve_sequence_lifecycle,
     _sequence_state,
     _setup_fvg,
 )
@@ -195,6 +197,86 @@ class ReviewerV414Tests(unittest.TestCase):
         self.assertEqual(state, "RETEST_PENDING")
         timestamps = [transition.timestamp for transition in transitions if transition.timestamp]
         self.assertEqual(timestamps, sorted(timestamps))
+
+
+    def test_new_sequence_transition_timestamp_is_genesis_closed_candle(self) -> None:
+        closed_genesis_timestamp = 1787223300
+        current_open_timestamp = 1787230800
+        state, transitions, transition, reason = _resolve_sequence_lifecycle(
+            {"persistence_version": 2, "state_schema": "review-state.v2", "sequence_state": "EXPIRED_NO_TRIGGER"},
+            "BTC-seq-0003",
+            "SEEKING_LIQUIDITY",
+            [],
+            True,
+            closed_genesis_timestamp,
+        )
+        self.assertEqual(state, "SEEKING_LIQUIDITY")
+        self.assertEqual(transition, "NEW_SEQUENCE BTC-seq-0003")
+        self.assertEqual(reason, "pullback_stage=SEEKING_LIQUIDITY")
+        self.assertEqual(transitions[-1].previous_state, "NONE")
+        self.assertEqual(transitions[-1].new_state, "SEEKING_LIQUIDITY")
+        self.assertEqual(transitions[-1].timestamp, closed_genesis_timestamp)
+        self.assertNotEqual(transitions[-1].timestamp, 0)
+        self.assertNotEqual(transitions[-1].timestamp, current_open_timestamp)
+
+    def test_terminal_to_new_sequence_metadata_survives_fresh_reload(self) -> None:
+        closed_genesis_timestamp = 1787223300
+        current_open_timestamp = 1787230800
+        _, transitions, _, _ = _resolve_sequence_lifecycle(
+            {"persistence_version": 2, "state_schema": "review-state.v2", "sequence_state": "EXPIRED_NO_TRIGGER"},
+            "BTC-seq-0003",
+            "SEEKING_LIQUIDITY",
+            [],
+            True,
+            closed_genesis_timestamp,
+        )
+        review = {
+            "Swing_Bias": "BULLISH",
+            "Market_Regime": "TREND_PULLBACK",
+            "Current_Phase": "PULLBACK",
+            "Macro_Draw_on_Liquidity": "NONE",
+            "Structural_Invalidation": {"H1": "NONE"},
+            "State": "WAIT",
+            "Confidence": "UNCALIBRATED",
+            "Review_Timestamp": "1787230500",
+            "Active_Tactical_Draw": "Internal Sell-side Liquidity 68853.22 on H1, formed_at=1787194800, distance=0.0423",
+            "Candidate_Tactical_Draw": "Internal Sell-side Liquidity 68853.22 on H1, formed_at=1787194800, distance=0.0423",
+            "Active_Draw_Selected_At": str(closed_genesis_timestamp),
+            "Sequence_Started_At": str(closed_genesis_timestamp),
+            "Active_Draw_Status": "NONE",
+            "Candidate_Draw_Status": "NONE",
+            "Sequence_ID": "BTC-seq-0003",
+            "Sequence_State": "SEEKING_LIQUIDITY",
+            "Sequence_Transitions": [transition.__dict__ for transition in transitions],
+            "Target_Changed": "YES",
+            "Target_Change_Reason": "NEW_SEQUENCE_STARTED",
+            "Primary_POI": "NONE",
+        }
+        previous = {
+            "BTC": {
+                "persistence_version": 2,
+                "state_schema": "review-state.v2",
+                "sequence_id": "BTC-seq-0002",
+                "sequence_state": "EXPIRED_NO_TRIGGER",
+                "active_tactical_draw": None,
+                "target_transition_history": [],
+                "retired_liquidity_instances": [{"liquidity_id": "H1-SSL-1787119200"}],
+            }
+        }
+        with tempfile.TemporaryDirectory() as directory:
+            state_path = Path(directory) / "state.json"
+            persist_review_state(state_path, {"BTC": review}, previous)
+            persisted, _ = load_review_state(state_path)
+        transition = persisted["BTC"]["last_sequence_transition"]
+        self.assertEqual(persisted["BTC"]["sequence_id"], "BTC-seq-0003")
+        self.assertEqual(persisted["BTC"]["sequence_state"], "SEEKING_LIQUIDITY")
+        self.assertEqual(persisted["BTC"]["sequence_started_at"], closed_genesis_timestamp)
+        self.assertEqual(transition["previous_state"], "NONE")
+        self.assertEqual(transition["new_state"], "SEEKING_LIQUIDITY")
+        self.assertEqual(transition["timestamp"], closed_genesis_timestamp)
+        self.assertNotEqual(transition["timestamp"], 0)
+        self.assertNotEqual(transition["timestamp"], current_open_timestamp)
+        self.assertEqual(transition["evidence"], "pullback_stage=SEEKING_LIQUIDITY")
 
     def test_btc_review10_stale_target_regression(self) -> None:
         with tempfile.TemporaryDirectory() as directory:

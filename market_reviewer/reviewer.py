@@ -1221,10 +1221,15 @@ def _resolve_sequence_lifecycle(
     computed_state: str,
     computed_transitions: list[SequenceTransition],
     new_sequence_started: bool,
+    new_sequence_timestamp: int = 0,
 ) -> tuple[str, list[SequenceTransition], str, str]:
     previous_state = _previous_sequence_state(previous_thesis)
     if not previous_state or not _is_v2_state(previous_thesis) or new_sequence_started:
         transition = _last_transition_for_state(computed_transitions, computed_state)
+        if new_sequence_started and (transition is None or transition.timestamp == 0):
+            evidence = transition.evidence if transition else "pullback_stage=SEEKING_LIQUIDITY"
+            transition = SequenceTransition("NONE", computed_state, new_sequence_timestamp, evidence)
+            computed_transitions = [transition]
         reason = transition.evidence if transition else "new sequence initialized"
         return computed_state, computed_transitions, f"NEW_SEQUENCE {sequence_id}", reason
     if previous_state in TERMINAL_SEQUENCE_STATES:
@@ -1332,6 +1337,7 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
         sequence_state,
         transitions,
         new_sequence_started,
+        sequence_started_at if new_sequence_started else 0,
     )
     if sequence_state == "EXPIRED_NO_TRIGGER" and not new_sequence_started:
         active_tactical_level = None
