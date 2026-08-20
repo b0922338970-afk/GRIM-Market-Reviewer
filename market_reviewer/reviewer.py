@@ -64,6 +64,7 @@ class LiquidityLevel:
     timeframe: str
     formed_at: int
     status: str
+    liquidity_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -381,6 +382,48 @@ def _level_status(events: list[LiquidityEvent]) -> str:
     return "UNSWEPT"
 
 
+def _liquidity_side(level_type: str) -> str:
+    if "Equal Lows" in level_type:
+        return "EQL"
+    if "Equal Highs" in level_type:
+        return "EQH"
+    if "Sell-side" in level_type:
+        return "SSL"
+    if "Buy-side" in level_type:
+        return "BSL"
+    return level_type.upper().replace(" ", "_")
+
+
+def _liquidity_id(level: LiquidityLevel | dict | None) -> str:
+    if not level:
+        return ""
+    if isinstance(level, dict):
+        existing = level.get("liquidity_id")
+        if existing:
+            return str(existing)
+        timeframe = str(level.get("timeframe", ""))
+        level_type = str(level.get("type", ""))
+        formed_at = level.get("formed_at", 0)
+    else:
+        existing = level.liquidity_id
+        if existing:
+            return existing
+        timeframe = level.timeframe
+        level_type = level.type
+        formed_at = level.formed_at
+    try:
+        formed = int(formed_at)
+    except (TypeError, ValueError):
+        formed = 0
+    return f"{timeframe}-{_liquidity_side(level_type)}-{formed}"
+
+
+def _with_liquidity_id(level: LiquidityLevel) -> LiquidityLevel:
+    if level.liquidity_id:
+        return level
+    return LiquidityLevel(level.price, level.type, level.timeframe, level.formed_at, level.status, _liquidity_id(level))
+
+
 def _equal_levels(frame: MarketDataFrame, swings: list[Swing]) -> list[LiquidityLevel]:
     levels: list[LiquidityLevel] = []
     tolerance = max(frame.closed_candles()[-1].close * 0.001, 0.01)
@@ -402,7 +445,10 @@ def find_liquidity(frame: MarketDataFrame, structure: Structure) -> list[Liquidi
         level_type = "External Sell-side Liquidity" if frame.timeframe in HTF_TIMEFRAMES else "Internal Sell-side Liquidity"
         levels.append(LiquidityLevel(structure.last_swing_low.price, level_type, frame.timeframe, structure.last_swing_low.formed_at, "UNSWEPT"))
     levels.extend(_equal_levels(frame, structure.swings))
-    return [LiquidityLevel(level.price, level.type, level.timeframe, level.formed_at, _level_status(_liquidity_events_for_level(candles, level))) for level in levels]
+    return [
+        _with_liquidity_id(LiquidityLevel(level.price, level.type, level.timeframe, level.formed_at, _level_status(_liquidity_events_for_level(candles, level))))
+        for level in levels
+    ]
 
 
 def find_liquidity_events(frame: MarketDataFrame, levels: list[LiquidityLevel]) -> list[LiquidityEvent]:
@@ -638,12 +684,22 @@ def _find_matching_level(liquidity: list[LiquidityLevel], raw: dict | None) -> L
         price = float(raw["price"])
         timeframe = str(raw["timeframe"])
         level_type = str(raw["type"])
+        formed_at = int(raw.get("formed_at", 0))
     except (KeyError, TypeError, ValueError):
         return None
+    raw_id = _liquidity_id(raw)
+    if raw_id:
+        for level in liquidity:
+            if _liquidity_id(level) == raw_id:
+                return level
+    if formed_at:
+        for level in liquidity:
+            if level.timeframe == timeframe and level.type == level_type and level.formed_at == formed_at:
+                return level
     for level in liquidity:
         if level.timeframe == timeframe and level.type == level_type and abs(level.price - price) < 0.005:
             return level
-    return LiquidityLevel(price, level_type, timeframe, int(raw.get("formed_at", 0)), "UNSWEPT")
+    return LiquidityLevel(price, level_type, timeframe, formed_at, "UNSWEPT", raw_id)
 
 
 def _previous_active_target(previous_thesis: dict | None, liquidity: list[LiquidityLevel]) -> LiquidityLevel | None:
@@ -651,6 +707,18 @@ def _previous_active_target(previous_thesis: dict | None, liquidity: list[Liquid
         return None
     raw = previous_thesis.get("active_tactical_draw") or previous_thesis.get("previous_active_tactical_draw")
     return _find_matching_level(liquidity, raw)
+
+
+def _retired_liquidity_ids(previous_thesis: dict | None) -> set[str]:
+    retired: set[str] = set()
+    for item in (previous_thesis or {}).get("retired_liquidity_instances", []):
+        if isinstance(item, dict) and item.get("liquidity_id"):
+            retired.add(str(item["liquidity_id"]))
+    return retired
+
+
+def _is_retired_for_sequence_genesis(previous_thesis: dict | None, level: LiquidityLevel | None) -> bool:
+    return bool(level and _liquidity_id(level) in _retired_liquidity_ids(previous_thesis))
 
 
 def _draw_status(events: list[LiquidityEvent]) -> str:
@@ -711,8 +779,11 @@ def _resolve_tactical_targets(
     reselection = (previous_thesis or {}).get("target_reselection")
     if reselection:
         new_target = _find_matching_level(liquidity, reselection.get("new_target"))
-        if new_target:
+        if new_target and not _is_retired_for_sequence_genesis(previous_thesis, new_target):
             return new_target, candidate, _draw_status(_events_for_level(liquidity_events, new_target)), candidate_status, "YES", "TARGET_RESELECTED"
+    terminal_states = {"EXPIRED_NO_TRIGGER", "INVALIDATED"}
+    if previous_state in terminal_states and _is_retired_for_sequence_genesis(previous_thesis, candidate):
+        return None, candidate, "NONE", candidate_status, "NO", "AWAITING_FRESH_TACTICAL_LIQUIDITY"
     active_states = {"", "SEEKING_LIQUIDITY", "LIQUIDITY_SWEPT", "DISPLACEMENT_CONFIRMED", "MSS_CONFIRMED", "SETUP_FVG_CREATED", "RETEST_PENDING"}
     if previous and previous_state in active_states:
         active_status = _draw_status(_events_for_level(liquidity_events, previous))
@@ -819,7 +890,13 @@ def _setup_fvg(fvgs: list[FairValueGap], sweep: LiquidityEvent | None, displacem
         return None
     candidates = [
         gap for gap in fvgs
-        if gap.setup_type == "SETUP_FVG" and gap.direction == bias and gap.formed_at >= displacement.timestamp and gap.formed_at >= sweep.timestamp
+        if (
+            gap.setup_type == "SETUP_FVG"
+            and gap.direction == bias
+            and gap.formed_at >= displacement.timestamp
+            and gap.formed_at >= sweep.timestamp
+            and gap.formed_at >= mss.timestamp
+        )
     ]
     return candidates[-1] if candidates else None
 
