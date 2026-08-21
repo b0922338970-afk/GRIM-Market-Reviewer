@@ -124,6 +124,10 @@ def _normalize_v2_state(state: dict) -> dict:
     }
     normalized["active_tactical_draw"] = _with_liquidity_id(normalized.get("active_tactical_draw"))
     normalized["candidate_tactical_draw"] = _with_liquidity_id(normalized.get("candidate_tactical_draw"))
+    normalized["active_setup_poi"] = _with_setup_id(normalized.get("active_setup_poi") or normalized.get("setup_poi"))
+    normalized["setup_poi"] = normalized["active_setup_poi"]
+    normalized["active_setup_id"] = _setup_id(normalized["active_setup_poi"])
+    normalized["candidate_setup_poi"] = _with_setup_id(normalized.get("candidate_setup_poi"))
     retired = [dict(item) for item in normalized.get("retired_liquidity_instances", []) if isinstance(item, dict)]
     for item in retired:
         if "liquidity_id" not in item:
@@ -169,7 +173,10 @@ def persist_review_state(path: Path, reviews: dict[str, dict], previous: dict[st
 def _state_for_symbol(symbol: str, review: dict, previous: dict) -> dict:
     active = _level_from_text(review.get("Active_Tactical_Draw", "NONE"))
     candidate = _level_from_text(review.get("Candidate_Tactical_Draw", "NONE"))
-    setup_poi = _setup_from_text(review.get("Setup_FVG", "NONE")) or previous.get("setup_poi")
+    parsed_setup = _with_setup_id(_setup_from_text(review.get("Setup_FVG", "NONE")))
+    previous_setup = _with_setup_id(previous.get("active_setup_poi") or previous.get("setup_poi"))
+    setup_poi = parsed_setup or previous_setup
+    candidate_setup_poi = _with_setup_id(_setup_from_text(review.get("Candidate_Setup_FVG", "NONE")))
     active_selected_at = _optional_int(review.get("Active_Draw_Selected_At"))
     sequence_started_at = _optional_int(review.get("Sequence_Started_At")) or active_selected_at
 
@@ -238,10 +245,14 @@ def _state_for_symbol(symbol: str, review: dict, previous: dict) -> dict:
         "previous_state": review.get("State"),
         "previous_score": review.get("Confidence"),
         "previous_review_timestamp": _optional_int(review.get("Review_Timestamp")) or _review_timestamp_from_transition(last_transition),
-        "eligible_retest_confirmed": review.get("Eligible_Retest_Confirmed") == "YES",
-        "eligible_retest_timestamp": _optional_int(review.get("Eligible_Retest_Timestamp")),
-        "eligible_retest_evidence_id": review.get("Eligible_Retest_Evidence_ID"),
+        "eligible_retest_confirmed": review.get("Eligible_Retest_Confirmed") == "YES" and review.get("Eligible_Retest_Setup_ID", "NONE") == _setup_id(setup_poi),
+        "eligible_retest_timestamp": _optional_int(review.get("Eligible_Retest_Timestamp")) if review.get("Eligible_Retest_Setup_ID", "NONE") == _setup_id(setup_poi) else None,
+        "eligible_retest_evidence_id": review.get("Eligible_Retest_Evidence_ID") if review.get("Eligible_Retest_Setup_ID", "NONE") == _setup_id(setup_poi) else "NONE",
+        "eligible_retest_setup_id": review.get("Eligible_Retest_Setup_ID") if review.get("Eligible_Retest_Setup_ID", "NONE") == _setup_id(setup_poi) else "NONE",
         "setup_poi": setup_poi,
+        "active_setup_id": _setup_id(setup_poi),
+        "active_setup_poi": setup_poi,
+        "candidate_setup_poi": candidate_setup_poi,
         "active_tactical_draw": active,
         "candidate_tactical_draw": candidate,
         "sequence_id": review.get("Sequence_ID"),
@@ -265,7 +276,7 @@ def _setup_from_text(text: str) -> dict[str, Any] | None:
         return None
     lower = float(match.group(3))
     upper = float(match.group(4))
-    return {
+    setup = {
         "direction": match.group(1),
         "timeframe": match.group(2),
         "lower": lower,
@@ -278,6 +289,21 @@ def _setup_from_text(text: str) -> dict[str, Any] | None:
         "setup_type": "SETUP_FVG",
         "related_displacement_id": f"{match.group(2)}:{match.group(5)}",
     }
+    setup["setup_id"] = _setup_id(setup)
+    return setup
+
+def _setup_id(setup: dict | None) -> str:
+    if not setup:
+        return "NONE"
+    return f"{setup.get('timeframe', '')}-{setup.get('direction', '')}-{setup.get('setup_type', 'SETUP_FVG')}-{setup.get('formed_at', 0)}"
+
+
+def _with_setup_id(setup: dict | None) -> dict | None:
+    if not isinstance(setup, dict):
+        return setup
+    enriched = dict(setup)
+    enriched["setup_id"] = _setup_id(enriched)
+    return enriched
 
 def _level_from_text(text: str) -> dict[str, Any] | None:
     if not text or text == "NONE":

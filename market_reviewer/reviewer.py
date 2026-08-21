@@ -150,6 +150,7 @@ class RetestEvidence:
     timestamp: int | None = None
     evidence_id: str | None = None
     ohlc: str | None = None
+    setup_id: str | None = None
 
 
 @dataclass
@@ -191,6 +192,9 @@ class Review:
     Displacement: str
     Contextual_MSS: str
     Setup_FVG: str
+    Active_Setup_ID: str
+    Candidate_Setup_FVG: str
+    Candidate_Setup_ID: str
     Primary_POI: str
     Secondary_POI: str
     POI_Width: str
@@ -200,6 +204,7 @@ class Review:
     Eligible_Retest_Confirmed: str
     Eligible_Retest_Timestamp: str
     Eligible_Retest_Evidence_ID: str
+    Eligible_Retest_Setup_ID: str
     Preferred_Direction: str
     State: str
     Thesis_Status: str
@@ -913,6 +918,50 @@ def _setup_fvg(fvgs: list[FairValueGap], sweep: LiquidityEvent | None, displacem
 
 
 
+def _setup_id(gap: FairValueGap | dict | None) -> str:
+    if not gap:
+        return "NONE"
+    if isinstance(gap, dict):
+        setup_type = str(gap.get("setup_type", "SETUP_FVG"))
+        direction = str(gap.get("direction", ""))
+        timeframe = str(gap.get("timeframe", ""))
+        formed_at = gap.get("formed_at", 0)
+    else:
+        setup_type = gap.setup_type
+        direction = gap.direction
+        timeframe = gap.timeframe
+        formed_at = gap.formed_at
+    return f"{timeframe}-{direction}-{setup_type}-{formed_at}"
+
+
+def _same_setup_identity(first: FairValueGap | None, second: FairValueGap | None) -> bool:
+    if not first or not second:
+        return False
+    return (
+        _setup_id(first) == _setup_id(second)
+        and abs(first.lower - second.lower) < 0.01
+        and abs(first.upper - second.upper) < 0.01
+    )
+
+
+def _refresh_setup_status(frames: dict[str, MarketDataFrame], gap: FairValueGap | None) -> FairValueGap | None:
+    if not gap or gap.timeframe not in frames:
+        return gap
+    status, touches = _zone_status(frames[gap.timeframe].closed_candles(), gap.direction, gap.lower, gap.upper, gap.formed_at)
+    return FairValueGap(
+        upper=gap.upper,
+        lower=gap.lower,
+        midpoint=gap.midpoint,
+        direction=gap.direction,
+        timeframe=gap.timeframe,
+        formed_at=gap.formed_at,
+        status=status,
+        touch_count=touches,
+        displacement_strength=gap.displacement_strength,
+        setup_type=gap.setup_type,
+        related_displacement_id=gap.related_displacement_id,
+    )
+
 def _previous_setup_fvg(previous_thesis: dict | None) -> FairValueGap | None:
     raw = (previous_thesis or {}).get("setup_poi")
     if not isinstance(raw, dict):
@@ -943,15 +992,19 @@ def _setup_fvg_text(gap: FairValueGap | None) -> str:
 def _eligible_setup_retest(frames: dict[str, MarketDataFrame], gap: FairValueGap | None) -> RetestEvidence:
     if not gap or gap.timeframe not in frames:
         return RetestEvidence(False)
+    setup_id = _setup_id(gap)
     for candle in frames[gap.timeframe].closed_candles():
         if candle.timestamp <= gap.formed_at:
             continue
         if candle.low <= gap.upper and candle.high >= gap.lower:
+            if gap.direction == "BULLISH" and candle.close < gap.lower:
+                return RetestEvidence(False, setup_id=setup_id)
+            if gap.direction == "BEARISH" and candle.close > gap.upper:
+                return RetestEvidence(False, setup_id=setup_id)
             evidence_id = f"{gap.timeframe}:{candle.timestamp}"
             ohlc = f"O={candle.open:.2f} H={candle.high:.2f} L={candle.low:.2f} C={candle.close:.2f}"
-            return RetestEvidence(True, candle.timestamp, evidence_id, ohlc)
-    return RetestEvidence(False)
-
+            return RetestEvidence(True, candle.timestamp, evidence_id, ohlc, setup_id)
+    return RetestEvidence(False, setup_id=setup_id)
 
 def _zone_distance(price: float, lower: float, upper: float) -> float:
     if lower <= price <= upper:
@@ -1406,9 +1459,18 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
             target_reason = "AWAITING_NEW_PULLBACK"
     pois = _make_pois(price, swing_bias, premium_discount, fvgs, order_blocks, liquidity_events)
     primary_poi, secondary_poi, poi_conflict = _poi_summary(pois, swing_bias)
-    output_setup_fvg = setup_fvg or (_previous_setup_fvg(previous_thesis) if sequence_state in {"SETUP_FVG_CREATED", "RETEST_PENDING"} else None)
+    previous_setup = _refresh_setup_status(frames, _previous_setup_fvg(previous_thesis))
+    active_setup_states = {"SETUP_FVG_CREATED", "RETEST_PENDING"}
+    if previous_setup and _previous_sequence_state(previous_thesis) in active_setup_states and sequence_state in active_setup_states:
+        output_setup_fvg = previous_setup
+        candidate_setup_fvg = setup_fvg if not _same_setup_identity(previous_setup, setup_fvg) else None
+    else:
+        output_setup_fvg = _refresh_setup_status(frames, setup_fvg) if sequence_state in active_setup_states else None
+        candidate_setup_fvg = None
     eligible_retest = _eligible_setup_retest(frames, output_setup_fvg)
-    state, missing, conflicts = _state_model(swing_bias, phase, pullback_stage, primary_poi, sequence_state, poi_conflict, eligible_retest.confirmed)
+    active_setup_id = _setup_id(output_setup_fvg)
+    eligible_matches_active = eligible_retest.confirmed and eligible_retest.setup_id == active_setup_id and output_setup_fvg is not None and output_setup_fvg.status != "INVALIDATED"
+    state, missing, conflicts = _state_model(swing_bias, phase, pullback_stage, primary_poi, sequence_state, poi_conflict, eligible_matches_active)
     d1_bias = structures["D1"].state if structures["D1"].state in {"BULLISH", "BEARISH"} else "RANGE"
     return Review(
         Symbol=frames["D1"].symbol,
@@ -1448,15 +1510,19 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
         Displacement=_displacement_text(displacement),
         Contextual_MSS=_contextual_mss_text(contextual_mss, latest_tactical_sweep, displacement),
         Setup_FVG=_setup_fvg_text(output_setup_fvg),
+        Active_Setup_ID=active_setup_id,
+        Candidate_Setup_FVG=_setup_fvg_text(candidate_setup_fvg),
+        Candidate_Setup_ID=_setup_id(candidate_setup_fvg),
         Primary_POI=_poi_text(primary_poi),
         Secondary_POI=_poi_text(secondary_poi),
         POI_Width=_poi_width_text(primary_poi),
         POI_Conflict=poi_conflict,
         Sequence_State=sequence_state,
         Sequence_Transitions=[asdict(transition) for transition in transitions],
-        Eligible_Retest_Confirmed="YES" if eligible_retest.confirmed else "NO",
-        Eligible_Retest_Timestamp=str(eligible_retest.timestamp) if eligible_retest.timestamp is not None else "NONE",
-        Eligible_Retest_Evidence_ID=eligible_retest.evidence_id or "NONE",
+        Eligible_Retest_Confirmed="YES" if eligible_matches_active else "NO",
+        Eligible_Retest_Timestamp=str(eligible_retest.timestamp) if eligible_matches_active and eligible_retest.timestamp is not None else "NONE",
+        Eligible_Retest_Evidence_ID=eligible_retest.evidence_id if eligible_matches_active and eligible_retest.evidence_id else "NONE",
+        Eligible_Retest_Setup_ID=eligible_retest.setup_id if eligible_matches_active and eligible_retest.setup_id else "NONE",
         Preferred_Direction="LONG" if swing_bias == "BULLISH" else "SHORT" if swing_bias == "BEARISH" else "NONE",
         State=state,
         Thesis_Status=_thesis_status(previous_thesis, d1_bias),
