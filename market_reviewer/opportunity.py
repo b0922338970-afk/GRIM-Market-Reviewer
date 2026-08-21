@@ -31,7 +31,16 @@ FEATURE_DOMAINS = {
 }
 FEATURE_TYPES = {"DECISION_FEATURE", "OBSERVATION_FEATURE", "OUTCOME_FEATURE"}
 FEATURE_STATUSES = {"EXPERIMENTAL", "CANDIDATE", "CORE", "DEPRECATED"}
-FAILURE_SIGNATURES = {
+MISSING_EVIDENCE_SIGNATURES = {
+    "ELIGIBLE_RETEST",
+    "RECLAIM",
+    "DISPLACEMENT",
+    "CONTEXTUAL_MSS",
+    "SETUP_FVG_OR_VALID_OB",
+    "TACTICAL_LIQUIDITY_SWEEP",
+    "HIGH_QUALITY_POI",
+}
+RISK_SIGNATURES = {
     "SWEEP_WITHOUT_RECLAIM",
     "WEAK_DISPLACEMENT",
     "MSS_TOO_LATE",
@@ -42,8 +51,10 @@ FAILURE_SIGNATURES = {
     "RANGE_MIDPOINT",
     "DEAD_SESSION",
     "HTF_CONFLICT",
-    "SETUP_WITHOUT_RETEST",
     "OPPORTUNITY_TOO_EXTENDED",
+}
+OUTCOME_SIGNATURES = {
+    "SETUP_WITHOUT_RETEST",
     "EXPIRED_NO_TRIGGER",
 }
 OUTCOME_ORIGINS = {
@@ -153,7 +164,9 @@ def extract_opportunity_snapshot(review: dict[str, Any], frames: dict[str, Marke
     setup = _parse_setup_text(str(review.get("Setup_FVG") or "NONE"))
     raw_metrics, availability = _raw_metrics(review, frames, active, setup, snapshot_timestamp)
     features = _features(review, raw_metrics, availability, active, setup, snapshot_timestamp)
-    failure_signatures = _failure_signatures(review, raw_metrics)
+    missing_evidence = _missing_evidence_signatures(review)
+    risk_signatures = _risk_signatures(raw_metrics)
+    outcome_signatures = _outcome_signatures(review)
     for item in features.values():
         available_at = item.get("available_at")
         if isinstance(available_at, int) and available_at > snapshot_timestamp:
@@ -170,7 +183,9 @@ def extract_opportunity_snapshot(review: dict[str, Any], frames: dict[str, Marke
         "truth": _truth(review, active, setup),
         "raw_metrics": raw_metrics,
         "features": features,
-        "failure_signatures": failure_signatures,
+        "missing_evidence": missing_evidence,
+        "risk_signatures": risk_signatures,
+        "outcome_signatures": outcome_signatures,
         "availability": availability,
     }
 
@@ -368,12 +383,28 @@ def _truth(review: dict[str, Any], active: dict[str, Any] | None, setup: dict[st
     }
 
 
-def _failure_signatures(review: dict[str, Any], raw: dict[str, dict[str, Any]]) -> list[str]:
+def _missing_evidence_signatures(review: dict[str, Any]) -> list[str]:
+    mapping = {
+        "eligible setup retest": "ELIGIBLE_RETEST",
+        "active reclaim": "RECLAIM",
+        "reclaim": "RECLAIM",
+        "valid displacement": "DISPLACEMENT",
+        "contextual MSS/BOS confirmation": "CONTEXTUAL_MSS",
+        "SETUP_FVG or valid OB": "SETUP_FVG_OR_VALID_OB",
+        "tactical liquidity sweep": "TACTICAL_LIQUIDITY_SWEEP",
+        "high-quality thesis-aligned POI": "HIGH_QUALITY_POI",
+    }
     signatures: list[str] = []
-    if review.get("Sequence_State") == "EXPIRED_NO_TRIGGER":
-        signatures.append("EXPIRED_NO_TRIGGER")
-    if review.get("Sequence_State") == "RETEST_PENDING" and review.get("Eligible_Retest_Confirmed") != "YES":
-        signatures.append("SETUP_WITHOUT_RETEST")
+    for item in review.get("Missing_Evidence", []):
+        text = str(item)
+        for needle, signature in mapping.items():
+            if needle in text and signature not in signatures:
+                signatures.append(signature)
+    return [item for item in signatures if item in MISSING_EVIDENCE_SIGNATURES]
+
+
+def _risk_signatures(raw: dict[str, dict[str, Any]]) -> list[str]:
+    signatures: list[str] = []
     extension = raw["OPPORTUNITY"]["extension_from_genesis_atr"]
     if isinstance(extension, float) and extension > 3:
         signatures.append("OPPORTUNITY_TOO_EXTENDED")
@@ -381,7 +412,22 @@ def _failure_signatures(review: dict[str, Any], raw: dict[str, dict[str, Any]]) 
     room = raw["OPPORTUNITY"]["remaining_room_pct"]
     if isinstance(room, float) and room < 0.5:
         signatures.append("POOR_REMAINING_ROOM")
-    return [item for item in signatures if item in FAILURE_SIGNATURES]
+    return [item for item in signatures if item in RISK_SIGNATURES]
+
+
+def _outcome_signatures(review: dict[str, Any]) -> list[str]:
+    signatures: list[str] = []
+    sequence_state = review.get("Sequence_State")
+    if sequence_state == "EXPIRED_NO_TRIGGER":
+        signatures.append("EXPIRED_NO_TRIGGER")
+    terminal_without_retest = (
+        sequence_state in {"EXPIRED_NO_TRIGGER", "INVALIDATED"}
+        and review.get("Setup_FVG") not in {None, "NONE"}
+        and review.get("Eligible_Retest_Confirmed") != "YES"
+    )
+    if terminal_without_retest:
+        signatures.append("SETUP_WITHOUT_RETEST")
+    return [item for item in signatures if item in OUTCOME_SIGNATURES]
 
 
 def _parse_level_text(text: str) -> dict[str, Any] | None:

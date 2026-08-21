@@ -247,6 +247,57 @@ class OpportunityV42Tests(unittest.TestCase):
         self.assertEqual(snapshot["truth"]["eligible_retest"], False)
         self.assertEqual(snapshot["raw_metrics"]["FRESHNESS"]["mitigation_count"], 0)
 
+    def test_retest_pending_without_retest_is_missing_not_outcome(self) -> None:
+        snapshot = extract_opportunity_snapshot(self.reviews["ETH"], self.frames["ETH"])
+        self.assertIn("ELIGIBLE_RETEST", snapshot["missing_evidence"])
+        self.assertIn("HIGH_EXTENSION", snapshot["risk_signatures"])
+        self.assertIn("OPPORTUNITY_TOO_EXTENDED", snapshot["risk_signatures"])
+        self.assertEqual(snapshot["outcome_signatures"], [])
+        self.assertNotIn("SETUP_WITHOUT_RETEST", snapshot["outcome_signatures"])
+
+    def test_later_valid_retest_does_not_rewrite_historical_snapshot(self) -> None:
+        historical = extract_opportunity_snapshot(self.reviews["ETH"], self.frames["ETH"])
+        later_review = copy.deepcopy(self.reviews["ETH"])
+        later_review["Eligible_Retest_Confirmed"] = "YES"
+        later_review["Eligible_Retest_Timestamp"] = "1787311200"
+        later_review["Missing_Evidence"] = []
+        later = extract_opportunity_snapshot(later_review, self.frames["ETH"])
+        self.assertEqual(historical["outcome_signatures"], [])
+        self.assertNotIn("SETUP_WITHOUT_RETEST", historical["outcome_signatures"])
+        self.assertEqual(later["outcome_signatures"], [])
+        self.assertEqual(later["missing_evidence"], [])
+
+    def test_terminal_without_retest_allows_setup_without_retest_outcome(self) -> None:
+        terminal_review = copy.deepcopy(self.reviews["ETH"])
+        terminal_review["Sequence_State"] = "INVALIDATED"
+        terminal_review["Eligible_Retest_Confirmed"] = "NO"
+        terminal_review["Missing_Evidence"] = []
+        snapshot = extract_opportunity_snapshot(terminal_review, self.frames["ETH"])
+        self.assertIn("SETUP_WITHOUT_RETEST", snapshot["outcome_signatures"])
+        self.assertEqual(snapshot["missing_evidence"], [])
+
+    def test_expired_no_trigger_only_after_terminal_evidence(self) -> None:
+        active = extract_opportunity_snapshot(self.reviews["BTC"], self.frames["BTC"])
+        self.assertNotIn("EXPIRED_NO_TRIGGER", active["outcome_signatures"])
+        terminal_review = copy.deepcopy(self.reviews["BTC"])
+        terminal_review["Sequence_State"] = "EXPIRED_NO_TRIGGER"
+        terminal_review["Missing_Evidence"] = ["new pullback sequence"]
+        terminal = extract_opportunity_snapshot(terminal_review, self.frames["BTC"])
+        self.assertIn("EXPIRED_NO_TRIGGER", terminal["outcome_signatures"])
+
+    def test_risk_signature_cannot_affect_production_state(self) -> None:
+        review = copy.deepcopy(self.reviews["ETH"])
+        snapshot = extract_opportunity_snapshot(review, self.frames["ETH"])
+        self.assertIn("HIGH_EXTENSION", snapshot["risk_signatures"])
+        self.assertEqual(review["Sequence_State"], "RETEST_PENDING")
+        self.assertEqual(review["State"], "WATCH")
+
+    def test_outcome_signature_cannot_enter_historical_feature_snapshot(self) -> None:
+        snapshot = extract_opportunity_snapshot(self.reviews["ETH"], self.frames["ETH"])
+        serialized_features = str(snapshot["features"])
+        self.assertNotIn("SETUP_WITHOUT_RETEST", serialized_features)
+        self.assertNotIn("outcome_signatures", snapshot["features"])
+        self.assertEqual(snapshot["outcome_signatures"], [])
     def test_sequential_replay_result_unaffected(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "state.json"
