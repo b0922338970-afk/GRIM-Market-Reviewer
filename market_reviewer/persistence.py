@@ -149,8 +149,8 @@ def atomic_write_json(path: Path, data: dict) -> None:
             os.unlink(tmp_name)
 
 
-def persist_review_state(path: Path, reviews: dict[str, dict], previous: dict[str, dict]) -> dict:
-    state = {
+def build_review_state(reviews: dict[str, dict], previous: dict[str, dict]) -> dict:
+    return {
         "persistence_version": PERSISTENCE_VERSION,
         "state_schema": STATE_SCHEMA,
         "symbols": {
@@ -158,6 +158,10 @@ def persist_review_state(path: Path, reviews: dict[str, dict], previous: dict[st
             for symbol, review in reviews.items()
         },
     }
+
+
+def persist_review_state(path: Path, reviews: dict[str, dict], previous: dict[str, dict]) -> dict:
+    state = build_review_state(reviews, previous)
     atomic_write_json(path, state)
     return state
 
@@ -165,6 +169,7 @@ def persist_review_state(path: Path, reviews: dict[str, dict], previous: dict[st
 def _state_for_symbol(symbol: str, review: dict, previous: dict) -> dict:
     active = _level_from_text(review.get("Active_Tactical_Draw", "NONE"))
     candidate = _level_from_text(review.get("Candidate_Tactical_Draw", "NONE"))
+    setup_poi = _setup_from_text(review.get("Setup_FVG", "NONE")) or previous.get("setup_poi")
     active_selected_at = _optional_int(review.get("Active_Draw_Selected_At"))
     sequence_started_at = _optional_int(review.get("Sequence_Started_At")) or active_selected_at
 
@@ -178,6 +183,18 @@ def _state_for_symbol(symbol: str, review: dict, previous: dict) -> dict:
         candidate = _with_liquidity_id(candidate)
 
     transitions = review.get("Sequence_Transitions", [])
+    transition_history = list(previous.get("sequence_transition_history", []))
+    for transition in transitions:
+        if not isinstance(transition, dict):
+            continue
+        key = (transition.get("previous_state"), transition.get("new_state"), transition.get("timestamp"), transition.get("evidence"))
+        existing = {
+            (item.get("previous_state"), item.get("new_state"), item.get("timestamp"), item.get("evidence"))
+            for item in transition_history
+            if isinstance(item, dict)
+        }
+        if key not in existing:
+            transition_history.append(dict(transition))
     last_transition = transitions[-1] if transitions else previous.get("last_sequence_transition") or {
         "previous_state": "NONE",
         "new_state": review.get("Sequence_State", "UNKNOWN"),
@@ -221,18 +238,46 @@ def _state_for_symbol(symbol: str, review: dict, previous: dict) -> dict:
         "previous_state": review.get("State"),
         "previous_score": review.get("Confidence"),
         "previous_review_timestamp": _optional_int(review.get("Review_Timestamp")) or _review_timestamp_from_transition(last_transition),
+        "eligible_retest_confirmed": review.get("Eligible_Retest_Confirmed") == "YES",
+        "eligible_retest_timestamp": _optional_int(review.get("Eligible_Retest_Timestamp")),
+        "eligible_retest_evidence_id": review.get("Eligible_Retest_Evidence_ID"),
+        "setup_poi": setup_poi,
         "active_tactical_draw": active,
         "candidate_tactical_draw": candidate,
         "sequence_id": review.get("Sequence_ID"),
         "sequence_state": review.get("Sequence_State"),
         "sequence_started_at": sequence_started_at,
         "last_sequence_transition": last_transition,
+        "sequence_transition_history": transition_history,
         "target_changed": review.get("Target_Changed"),
         "target_change_reason": review.get("Target_Change_Reason"),
         "target_transition_history": history,
         "retired_liquidity_instances": retired,
     }
 
+
+
+def _setup_from_text(text: str) -> dict[str, Any] | None:
+    if not text or text == "NONE":
+        return None
+    match = re.search(r"^(BULLISH|BEARISH) SETUP_FVG (\w+) ([0-9]+(?:\.[0-9]+)?)-([0-9]+(?:\.[0-9]+)?) @ ([0-9]+); status=([A-Z_]+)", text)
+    if not match:
+        return None
+    lower = float(match.group(3))
+    upper = float(match.group(4))
+    return {
+        "direction": match.group(1),
+        "timeframe": match.group(2),
+        "lower": lower,
+        "upper": upper,
+        "midpoint": (lower + upper) / 2,
+        "formed_at": int(match.group(5)),
+        "status": match.group(6),
+        "touch_count": 0,
+        "displacement_strength": 0.0,
+        "setup_type": "SETUP_FVG",
+        "related_displacement_id": f"{match.group(2)}:{match.group(5)}",
+    }
 
 def _level_from_text(text: str) -> dict[str, Any] | None:
     if not text or text == "NONE":

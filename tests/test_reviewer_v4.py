@@ -150,7 +150,7 @@ class ReviewerV4Tests(unittest.TestCase):
         setup = FairValueGap(106, 102, 104, "BULLISH", "M5", 21, "FRESH", 0, 2, "SETUP_FVG")
         poi = POI("BULLISH FVG M5", "FVG", "BULLISH", "M5", 102, 106, 104, 21, "FRESH", {}, 10, 0.01)
         sequence_state, _ = _sequence_state("BULLISH", "PULLBACK", "RECLAIMED", sweep, displacement, mss, setup)
-        state, _, _ = _state_model("BULLISH", "PULLBACK", "RECLAIMED", poi, sequence_state, "NONE")
+        state, _, _ = _state_model("BULLISH", "PULLBACK", "RECLAIMED", poi, sequence_state, "NONE", True)
         self.assertEqual(state, "ARMED")
 
     def test_sequence_invalidation(self) -> None:

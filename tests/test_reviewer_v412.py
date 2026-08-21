@@ -138,7 +138,7 @@ class ReviewerV412Tests(unittest.TestCase):
         btc = reviews["BTC"]
         self.assertEqual(btc["Sequence_State"], "EXPIRED_NO_TRIGGER")
         self.assertEqual(btc["Active_Tactical_Draw"], "NONE")
-        self.assertEqual(btc["Target_Change_Reason"], "EXPIRED_NO_TRIGGER")
+        self.assertEqual(btc["Target_Change_Reason"], "AWAITING_NEW_PULLBACK")
         self.assertIsNone(persisted["BTC"]["active_tactical_draw"])
         self.assertEqual(persisted["BTC"]["target_transition_history"][-1]["previous_target"]["price"], 63981.0)
 
@@ -148,8 +148,10 @@ class ReviewerV412Tests(unittest.TestCase):
             atomic_write_json(state_path, v412_state())
             reviews = review_snapshot(REVIEW5, state_path)
         eth = reviews["ETH"]
-        self.assertEqual(eth["Sequence_State"], "DISPLACEMENT_CONFIRMED")
+        self.assertEqual(eth["Sequence_State"], "RETEST_PENDING")
         self.assertEqual(eth["State"], "WATCH")
+        self.assertEqual(eth["Eligible_Retest_Confirmed"], "NO")
+        self.assertIn("eligible setup retest", eth["Missing_Evidence"])
         self.assertNotIn("tactical liquidity sweep", eth["Missing_Evidence"])
         self.assertNotIn("valid displacement", eth["Missing_Evidence"])
 

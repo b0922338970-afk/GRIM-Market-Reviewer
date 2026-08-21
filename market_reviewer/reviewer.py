@@ -144,6 +144,14 @@ class SequenceTransition:
     evidence: str
 
 
+@dataclass(frozen=True)
+class RetestEvidence:
+    confirmed: bool
+    timestamp: int | None = None
+    evidence_id: str | None = None
+    ohlc: str | None = None
+
+
 @dataclass
 class Review:
     Symbol: str
@@ -189,6 +197,9 @@ class Review:
     POI_Conflict: str
     Sequence_State: str
     Sequence_Transitions: list[dict]
+    Eligible_Retest_Confirmed: str
+    Eligible_Retest_Timestamp: str
+    Eligible_Retest_Evidence_ID: str
     Preferred_Direction: str
     State: str
     Thesis_Status: str
@@ -901,10 +912,45 @@ def _setup_fvg(fvgs: list[FairValueGap], sweep: LiquidityEvent | None, displacem
     return candidates[-1] if candidates else None
 
 
+
+def _previous_setup_fvg(previous_thesis: dict | None) -> FairValueGap | None:
+    raw = (previous_thesis or {}).get("setup_poi")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return FairValueGap(
+            upper=float(raw["upper"]),
+            lower=float(raw["lower"]),
+            midpoint=float(raw.get("midpoint", (float(raw["upper"]) + float(raw["lower"])) / 2)),
+            direction=str(raw["direction"]),
+            timeframe=str(raw["timeframe"]),
+            formed_at=int(raw["formed_at"]),
+            status=str(raw.get("status", "FRESH")),
+            touch_count=int(raw.get("touch_count", 0)),
+            displacement_strength=float(raw.get("displacement_strength", 0.0)),
+            setup_type=str(raw.get("setup_type", "SETUP_FVG")),
+            related_displacement_id=raw.get("related_displacement_id"),
+        )
+    except (KeyError, TypeError, ValueError):
+        return None
+
 def _setup_fvg_text(gap: FairValueGap | None) -> str:
     if not gap:
         return "NONE"
     return f"{gap.direction} SETUP_FVG {gap.timeframe} {gap.lower:.2f}-{gap.upper:.2f} @ {gap.formed_at}; status={gap.status}"
+
+
+def _eligible_setup_retest(frames: dict[str, MarketDataFrame], gap: FairValueGap | None) -> RetestEvidence:
+    if not gap or gap.timeframe not in frames:
+        return RetestEvidence(False)
+    for candle in frames[gap.timeframe].closed_candles():
+        if candle.timestamp <= gap.formed_at:
+            continue
+        if candle.low <= gap.upper and candle.high >= gap.lower:
+            evidence_id = f"{gap.timeframe}:{candle.timestamp}"
+            ohlc = f"O={candle.open:.2f} H={candle.high:.2f} L={candle.low:.2f} C={candle.close:.2f}"
+            return RetestEvidence(True, candle.timestamp, evidence_id, ohlc)
+    return RetestEvidence(False)
 
 
 def _zone_distance(price: float, lower: float, upper: float) -> float:
@@ -1088,6 +1134,7 @@ def _state_model(
     primary_poi: POI | None,
     sequence_state: str,
     poi_conflict: str,
+    eligible_retest_confirmed: bool = False,
 ) -> tuple[str, list[str], list[str]]:
     missing: list[str] = []
     conflicts: list[str] = []
@@ -1110,10 +1157,14 @@ def _state_model(
         missing.extend(["contextual MSS/BOS confirmation", "SETUP_FVG or valid OB"])
     elif sequence_state == "MSS_CONFIRMED":
         missing.append("SETUP_FVG or valid OB")
+    elif sequence_state == "RETEST_PENDING" and not eligible_retest_confirmed:
+        missing.append("eligible setup retest")
     if not primary_poi:
         missing.append("high-quality thesis-aligned POI")
     if sequence_state == "RETEST_PENDING":
-        return "ARMED", missing, conflicts
+        if eligible_retest_confirmed:
+            return "ARMED", missing, conflicts
+        return "WATCH", missing, conflicts
     if sequence_state in {"LIQUIDITY_SWEPT", "MSS_CONFIRMED", "DISPLACEMENT_CONFIRMED"} or pullback_stage in {"LIQUIDITY_TAKEN", "RECLAIMED", "REACCELERATION"}:
         return "WATCH", missing, conflicts
     return "WAIT", missing, conflicts
@@ -1243,10 +1294,16 @@ def _resolve_sequence_lifecycle(
     previous_rank = SEQUENCE_ORDER.get(previous_state, 0)
     computed_rank = SEQUENCE_ORDER.get(computed_state, 0)
     if computed_rank > previous_rank:
-        transition = _last_transition_for_state(computed_transitions, computed_state) or SequenceTransition(previous_state, computed_state, 0, "forward lifecycle evidence")
-        if transition.previous_state != previous_state:
-            transition = SequenceTransition(previous_state, transition.new_state, transition.timestamp, transition.evidence)
-        return computed_state, [transition], f"{previous_state} -> {computed_state}", transition.evidence
+        forward = [
+            transition for transition in computed_transitions
+            if SEQUENCE_ORDER.get(transition.new_state, 0) > previous_rank
+        ]
+        if not forward:
+            forward = [SequenceTransition(previous_state, computed_state, 0, "forward lifecycle evidence")]
+        if forward[0].previous_state != previous_state:
+            forward[0] = SequenceTransition(previous_state, forward[0].new_state, forward[0].timestamp, forward[0].evidence)
+        transition = forward[-1]
+        return computed_state, forward, f"{previous_state} -> {computed_state}", transition.evidence
     return previous_state, [], "NO_TRANSITION", f"persisted state {previous_state} remains authoritative"
 
 
@@ -1349,7 +1406,9 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
             target_reason = "AWAITING_NEW_PULLBACK"
     pois = _make_pois(price, swing_bias, premium_discount, fvgs, order_blocks, liquidity_events)
     primary_poi, secondary_poi, poi_conflict = _poi_summary(pois, swing_bias)
-    state, missing, conflicts = _state_model(swing_bias, phase, pullback_stage, primary_poi, sequence_state, poi_conflict)
+    output_setup_fvg = setup_fvg or (_previous_setup_fvg(previous_thesis) if sequence_state in {"SETUP_FVG_CREATED", "RETEST_PENDING"} else None)
+    eligible_retest = _eligible_setup_retest(frames, output_setup_fvg)
+    state, missing, conflicts = _state_model(swing_bias, phase, pullback_stage, primary_poi, sequence_state, poi_conflict, eligible_retest.confirmed)
     d1_bias = structures["D1"].state if structures["D1"].state in {"BULLISH", "BEARISH"} else "RANGE"
     return Review(
         Symbol=frames["D1"].symbol,
@@ -1388,13 +1447,16 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
         Liquidity_Event=_latest_liquidity_event(tactical_events),
         Displacement=_displacement_text(displacement),
         Contextual_MSS=_contextual_mss_text(contextual_mss, latest_tactical_sweep, displacement),
-        Setup_FVG=_setup_fvg_text(setup_fvg),
+        Setup_FVG=_setup_fvg_text(output_setup_fvg),
         Primary_POI=_poi_text(primary_poi),
         Secondary_POI=_poi_text(secondary_poi),
         POI_Width=_poi_width_text(primary_poi),
         POI_Conflict=poi_conflict,
         Sequence_State=sequence_state,
         Sequence_Transitions=[asdict(transition) for transition in transitions],
+        Eligible_Retest_Confirmed="YES" if eligible_retest.confirmed else "NO",
+        Eligible_Retest_Timestamp=str(eligible_retest.timestamp) if eligible_retest.timestamp is not None else "NONE",
+        Eligible_Retest_Evidence_ID=eligible_retest.evidence_id or "NONE",
         Preferred_Direction="LONG" if swing_bias == "BULLISH" else "SHORT" if swing_bias == "BEARISH" else "NONE",
         State=state,
         Thesis_Status=_thesis_status(previous_thesis, d1_bias),

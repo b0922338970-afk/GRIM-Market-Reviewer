@@ -58,7 +58,7 @@ class ReviewerV413Tests(unittest.TestCase):
             state_path.write_text(json.dumps(state), encoding="utf-8")
             reviews = review_snapshot(REVIEW4, state_path)
         self.assertEqual(reviews["BTC"]["Sequence_ID"], "BTC-seq-0002")
-        self.assertEqual(reviews["BTC"]["Sequence_State"], "SEEKING_LIQUIDITY")
+        self.assertEqual(reviews["BTC"]["Sequence_State"], "MSS_CONFIRMED")
         self.assertNotEqual(reviews["BTC"]["Active_Tactical_Draw"], "NONE")
 
     def test_displacement_confirmed_survives_fresh_review(self) -> None:
@@ -67,9 +67,10 @@ class ReviewerV413Tests(unittest.TestCase):
             corrected_review5_state(state_path)
             reviews = review_snapshot(REVIEW6, state_path)
         eth = reviews["ETH"]
-        self.assertEqual(eth["Loaded_Sequence_State"], "DISPLACEMENT_CONFIRMED")
-        self.assertEqual(eth["Sequence_State"], "DISPLACEMENT_CONFIRMED")
+        self.assertEqual(eth["Loaded_Sequence_State"], "RETEST_PENDING")
+        self.assertEqual(eth["Sequence_State"], "RETEST_PENDING")
         self.assertEqual(eth["State"], "WATCH")
+        self.assertEqual(eth["Eligible_Retest_Confirmed"], "NO")
         self.assertEqual(eth["Transition"], "NO_TRANSITION")
 
     def test_active_target_survives_fresh_review(self) -> None:
@@ -152,7 +153,7 @@ class ReviewerV413Tests(unittest.TestCase):
             payload = json.loads(result.stdout)
         self.assertEqual(payload["BTC"]["Sequence_State"], "EXPIRED_NO_TRIGGER")
         self.assertEqual(payload["BTC"]["Active_Tactical_Draw"], "NONE")
-        self.assertEqual(payload["ETH"]["Sequence_State"], "DISPLACEMENT_CONFIRMED")
+        self.assertEqual(payload["ETH"]["Sequence_State"], "RETEST_PENDING")
         self.assertIn("1909.77", payload["ETH"]["Active_Tactical_Draw"])
 
     def test_no_transition_persist_preserves_last_transition(self) -> None:
@@ -183,8 +184,9 @@ class ReviewerV413Tests(unittest.TestCase):
             reviews = review_snapshot(REVIEW6, state_path)
         eth = reviews["ETH"]
         self.assertEqual(eth["Sequence_ID"], "ETH-seq-0001")
-        self.assertEqual(eth["Sequence_State"], "DISPLACEMENT_CONFIRMED")
+        self.assertEqual(eth["Sequence_State"], "RETEST_PENDING")
         self.assertEqual(eth["State"], "WATCH")
+        self.assertEqual(eth["Eligible_Retest_Confirmed"], "NO")
         self.assertIn("1909.77", eth["Active_Tactical_Draw"])
         self.assertIn("1904.81", eth["Candidate_Tactical_Draw"])
         self.assertNotIn("tactical liquidity sweep", eth["Missing_Evidence"])

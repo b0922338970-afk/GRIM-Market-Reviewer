@@ -68,7 +68,7 @@ class PersistenceV411Tests(unittest.TestCase):
             state, loaded_from = load_review_state(state_path)
         self.assertEqual(loaded_from, STATE_SCHEMA)
         self.assertEqual(reviews["BTC"]["State_Loaded_From"], "LEGACY_MIGRATED")
-        self.assertEqual(reviews["BTC"]["Target_Change_Reason"], "ACTIVE_DRAW_INITIALIZED_FROM_LEGACY_STATE")
+        self.assertTrue(any(item.get("reason") == "ACTIVE_DRAW_INITIALIZED_FROM_LEGACY_STATE" for item in state["BTC"].get("target_transition_history", [])))
         self.assertEqual(state["BTC"]["persistence_version"], PERSISTENCE_VERSION)
         self.assertIn("active_tactical_draw", state["BTC"])
 
