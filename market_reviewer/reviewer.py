@@ -1153,6 +1153,7 @@ def _sequence_state(
     displacement: DisplacementEvent | None,
     mss: BreakEvent | None,
     setup_fvg: FairValueGap | None,
+    invalidation_timestamp: int = 0,
 ) -> tuple[str, list[SequenceTransition]]:
     transitions: list[SequenceTransition] = []
 
@@ -1161,7 +1162,7 @@ def _sequence_state(
         transitions.append(SequenceTransition(previous, new_state, timestamp, evidence))
 
     if swing_bias == "NONE" or phase == "REVERSAL_CANDIDATE":
-        add("INVALIDATED", 0, "no valid swing bias or structural invalidation")
+        add("INVALIDATED", invalidation_timestamp, "ACTIVE_SEQUENCE_INVALIDATED: no valid swing bias or structural invalidation")
         return "INVALIDATED", transitions
     add("SEEKING_LIQUIDITY", 0, f"pullback_stage={pullback_stage}")
     if not sweep:
@@ -1339,8 +1340,23 @@ def _resolve_sequence_lifecycle(
     if previous_state in TERMINAL_SEQUENCE_STATES:
         return previous_state, [], "NO_TRANSITION", f"terminal persisted state {previous_state}"
     if computed_state == "INVALIDATED":
-        transition = _last_transition_for_state(computed_transitions, "INVALIDATED") or SequenceTransition(previous_state, "INVALIDATED", 0, "structural invalidation")
-        return "INVALIDATED", [transition], f"{previous_state} -> INVALIDATED", transition.evidence
+        previous_rank = SEQUENCE_ORDER.get(previous_state, 0)
+        forward = [
+            transition for transition in computed_transitions
+            if transition.new_state == "INVALIDATED" or SEQUENCE_ORDER.get(transition.new_state, 0) > previous_rank
+        ]
+        if not forward:
+            transition = SequenceTransition(previous_state, "INVALIDATED", 0, "TERMINAL_TRANSITION_EVIDENCE_MISSING")
+            return "INVALIDATED", [transition], f"{previous_state} -> INVALIDATED", transition.evidence
+        normalized: list[SequenceTransition] = []
+        current_previous = previous_state or forward[0].previous_state
+        for transition in forward:
+            if transition.previous_state != current_previous:
+                transition = SequenceTransition(current_previous, transition.new_state, transition.timestamp, transition.evidence)
+            normalized.append(transition)
+            current_previous = transition.new_state
+        transition = normalized[-1]
+        return "INVALIDATED", normalized, f"{transition.previous_state} -> INVALIDATED", transition.evidence
     if previous_state == "SEEKING_LIQUIDITY" and computed_state == "EXPIRED_NO_TRIGGER":
         transition = _last_transition_for_state(computed_transitions, "EXPIRED_NO_TRIGGER") or SequenceTransition(previous_state, "EXPIRED_NO_TRIGGER", 0, "sequence expired before active liquidity sweep")
         return "EXPIRED_NO_TRIGGER", [transition], "SEEKING_LIQUIDITY -> EXPIRED_NO_TRIGGER", transition.evidence
@@ -1430,7 +1446,16 @@ def review_symbol(frames: dict[str, MarketDataFrame], previous_thesis: dict | No
     displacement = _latest_displacement([event for event in displacements if not latest_tactical_sweep or event.timestamp > latest_tactical_sweep.timestamp], swing_bias)
     contextual_mss = _contextual_mss(structures, latest_tactical_sweep, displacement, swing_bias)
     setup_fvg = _setup_fvg(fvgs, latest_tactical_sweep, displacement, contextual_mss, swing_bias)
-    sequence_state, transitions = _sequence_state(swing_bias, phase, pullback_stage, latest_tactical_sweep, displacement, contextual_mss, setup_fvg)
+    sequence_state, transitions = _sequence_state(
+        swing_bias,
+        phase,
+        pullback_stage,
+        latest_tactical_sweep,
+        displacement,
+        contextual_mss,
+        setup_fvg,
+        _latest_closed_timestamp(frames),
+    )
     if _should_expire_sequence(previous_thesis, phase, active_tactical_level, latest_tactical_sweep, structures, swing_bias, sequence_started_at, displacement):
         expired_target = active_tactical_level
         sequence_state = "EXPIRED_NO_TRIGGER"
