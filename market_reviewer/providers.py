@@ -30,7 +30,7 @@ TIMEFRAME_SECONDS = {"D1": 86400, "H4": 14400, "H1": 3600, "M15": 900, "M5": 300
 class MarketDataProvider(Protocol):
     name: str
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str) -> list[Candle]:
+    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200, end_timestamp: int | None = None) -> list[Candle]:
         """Return candles using provider candle-open timestamps."""
 
 
@@ -51,15 +51,16 @@ def _symbol_usd(symbol: str) -> str:
 class BitunixPerpetualProvider:
     name = "bitunix_perpetual"
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str) -> list[Candle]:
-        params = urlencode(
-            {
-                "symbol": _symbol_usdt(symbol),
-                "interval": TIMEFRAME_INTERVALS[self.name][timeframe],
-                "limit": 200,
-                "type": "LAST_PRICE",
-            }
-        )
+    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200, end_timestamp: int | None = None) -> list[Candle]:
+        payload_params = {
+            "symbol": _symbol_usdt(symbol),
+            "interval": TIMEFRAME_INTERVALS[self.name][timeframe],
+            "limit": min(limit, 200),
+            "type": "LAST_PRICE",
+        }
+        if end_timestamp is not None:
+            payload_params["endTime"] = end_timestamp * 1000
+        params = urlencode(payload_params)
         try:
             payload = _get_json(f"https://fapi.bitunix.com/api/v1/futures/market/kline?{params}")
             rows = payload.get("data", []) if isinstance(payload, dict) else []
@@ -84,14 +85,15 @@ class BitunixPerpetualProvider:
 class BinanceProvider:
     name = "binance"
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str) -> list[Candle]:
-        params = urlencode(
-            {
-                "symbol": _symbol_usdt(symbol),
-                "interval": TIMEFRAME_INTERVALS[self.name][timeframe],
-                "limit": 200,
-            }
-        )
+    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200, end_timestamp: int | None = None) -> list[Candle]:
+        payload_params = {
+            "symbol": _symbol_usdt(symbol),
+            "interval": TIMEFRAME_INTERVALS[self.name][timeframe],
+            "limit": min(limit, 1000),
+        }
+        if end_timestamp is not None:
+            payload_params["endTime"] = (end_timestamp * 1000) - 1
+        params = urlencode(payload_params)
         try:
             rows = _get_json(f"https://api.binance.com/api/v3/klines?{params}")
             if not isinstance(rows, list):
@@ -114,16 +116,17 @@ class BinanceProvider:
 class CoinbaseProvider:
     name = "coinbase"
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str) -> list[Candle]:
+    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200, end_timestamp: int | None = None) -> list[Candle]:
         duration = TIMEFRAME_SECONDS[timeframe]
-        end = int(time.time())
-        start = end - duration * 200
+        end = int(time.time()) if end_timestamp is None else end_timestamp
+        bounded_limit = min(limit, 300)
+        start = end - duration * bounded_limit
         params = urlencode(
             {
                 "start": str(start),
                 "end": str(end),
                 "granularity": TIMEFRAME_INTERVALS[self.name][timeframe],
-                "limit": 200,
+                "limit": bounded_limit,
             }
         )
         try:
@@ -152,10 +155,11 @@ class CoinbaseProvider:
 class KrakenProvider:
     name = "kraken"
 
-    def fetch_ohlcv(self, symbol: str, timeframe: str) -> list[Candle]:
+    def fetch_ohlcv(self, symbol: str, timeframe: str, limit: int = 200, end_timestamp: int | None = None) -> list[Candle]:
         pair = "XBTUSD" if symbol == "BTC" else f"{symbol}USD"
         duration = TIMEFRAME_SECONDS[timeframe]
-        since = int(time.time()) - duration * 220
+        end = int(time.time()) if end_timestamp is None else end_timestamp
+        since = end - duration * min(limit, 720)
         params = urlencode({"pair": pair, "interval": TIMEFRAME_INTERVALS[self.name][timeframe], "since": since})
         try:
             payload = _get_json(f"https://api.kraken.com/0/public/OHLC?{params}")
