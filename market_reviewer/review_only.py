@@ -12,5 +12,6 @@ def run_review_only(snapshot_path: str, thesis_path: str | None = None) -> str:
     reviews = review_snapshot(
         Path(snapshot_path),
         Path(thesis_path) if thesis_path else None,
+        enforce_replay_coverage=bool(thesis_path),
     )
     return json.dumps(reviews, indent=2, sort_keys=True)
