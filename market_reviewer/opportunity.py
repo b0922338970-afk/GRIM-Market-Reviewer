@@ -56,7 +56,9 @@ RISK_SIGNATURES = {
 OUTCOME_SIGNATURES = {
     "SETUP_WITHOUT_RETEST",
     "EXPIRED_NO_TRIGGER",
+    "INVALIDATED",
 }
+TERMINAL_SEQUENCE_STATES = {"EXPIRED_NO_TRIGGER", "INVALIDATED"}
 OUTCOME_ORIGINS = {
     "GATE_A",
     "GATE_B",
@@ -179,7 +181,7 @@ def extract_opportunity_snapshot(review: dict[str, Any], frames: dict[str, Marke
         "sequence_state": review.get("Sequence_State"),
         "snapshot_timestamp": snapshot_timestamp,
         "market_data_generation_id": generation_id,
-        "opportunity_status": "ACTIVE_OPPORTUNITY" if active else "NO_ACTIVE_OPPORTUNITY",
+        "opportunity_status": _opportunity_status(review),
         "truth": _truth(review, active, setup),
         "raw_metrics": raw_metrics,
         "features": features,
@@ -420,6 +422,8 @@ def _outcome_signatures(review: dict[str, Any]) -> list[str]:
     sequence_state = review.get("Sequence_State")
     if sequence_state == "EXPIRED_NO_TRIGGER":
         signatures.append("EXPIRED_NO_TRIGGER")
+    if sequence_state == "INVALIDATED" and _terminal_outcome_available(review, "INVALIDATED"):
+        signatures.append("INVALIDATED")
     terminal_without_retest = (
         sequence_state in {"EXPIRED_NO_TRIGGER", "INVALIDATED"}
         and review.get("Setup_FVG") not in {None, "NONE"}
@@ -430,6 +434,36 @@ def _outcome_signatures(review: dict[str, Any]) -> list[str]:
     return [item for item in signatures if item in OUTCOME_SIGNATURES]
 
 
+
+def _opportunity_status(review: dict[str, Any]) -> str:
+    sequence_state = review.get("Sequence_State")
+    if sequence_state in TERMINAL_SEQUENCE_STATES:
+        return "NO_ACTIVE_OPPORTUNITY"
+    if sequence_state and sequence_state not in {"NONE", "UNKNOWN"}:
+        return "ACTIVE_OPPORTUNITY"
+    return "NO_ACTIVE_OPPORTUNITY"
+
+
+def _terminal_outcome_available(review: dict[str, Any], terminal_state: str) -> bool:
+    terminal_timestamp = _terminal_transition_timestamp(review, terminal_state)
+    snapshot_timestamp = _int_or_none(review.get("Review_Timestamp"))
+    if terminal_timestamp is None or snapshot_timestamp is None:
+        return True
+    return snapshot_timestamp >= terminal_timestamp
+
+
+def _terminal_transition_timestamp(review: dict[str, Any], terminal_state: str) -> int | None:
+    transitions = review.get("Sequence_Transitions") or []
+    if isinstance(transitions, list):
+        timestamps = [
+            _int_or_none(item.get("timestamp"))
+            for item in transitions
+            if isinstance(item, dict) and item.get("new_state") == terminal_state
+        ]
+        timestamps = [item for item in timestamps if item is not None]
+        if timestamps:
+            return max(timestamps)
+    return _timestamp_from_text(str(review.get("Transition") or ""))
 def _parse_level_text(text: str) -> dict[str, Any] | None:
     if not text or text == "NONE":
         return None
