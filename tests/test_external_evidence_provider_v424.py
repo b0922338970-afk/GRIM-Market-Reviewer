@@ -10,6 +10,7 @@ from pathlib import Path
 os._walk_symlinks_as_files = False
 
 from market_reviewer.external_evidence import build_external_market_evidence
+import market_reviewer.external_evidence_providers as provider_module
 from market_reviewer.external_evidence_providers import (
     BinanceUSDmExternalEvidenceProvider,
     LIQUIDATION_HISTORY_LIVE_ONLY,
@@ -217,6 +218,74 @@ class FixtureGetJson:
             return [{"fundingRate": str(0.00001 * index), "fundingTime": (SNAPSHOT_TS - (40 - index) * 28_800) * 1000} for index in range(40)]
         raise OSError("unexpected url")
 
+class RaceFixtureGetJson:
+    def __init__(self, response_second_offset: int) -> None:
+        self.response_second_offset = response_second_offset
+
+    def __call__(self, url: str):
+        response_ms = (SNAPSHOT_TS + self.response_second_offset) * 1000
+        if "openInterest?" in url:
+            return {"openInterest": "1000", "time": SNAPSHOT_TS * 1000}
+        if "openInterestHist" in url:
+            base = (SNAPSHOT_TS - 48 * 300) * 1000
+            return [{"timestamp": base + index * 300_000, "sumOpenInterest": str(100 + index), "sumOpenInterestValue": str(1000 + index * 10)} for index in range(49)]
+        if "premiumIndex" in url:
+            return {"lastFundingRate": "0.0001", "nextFundingTime": (SNAPSHOT_TS + 28_800) * 1000, "time": response_ms}
+        if "fundingRate" in url:
+            return [{"fundingRate": str(0.00001 * index), "fundingTime": (SNAPSHOT_TS - (40 - index) * 28_800) * 1000} for index in range(40)]
+        raise OSError("unexpected url")
+
+
+class SequenceClock:
+    def __init__(self, values: list[int]) -> None:
+        self.values = list(values)
+
+    def time(self) -> int:
+        if len(self.values) == 1:
+            return self.values[0]
+        return self.values.pop(0)
+
+
+class ExternalEvidenceTimestampV424aTests(unittest.TestCase):
+    def test_post_fetch_snapshot_accepts_provider_next_second(self) -> None:
+        original = provider_module.time.time
+        provider_module.time.time = SequenceClock([SNAPSHOT_TS, SNAPSHOT_TS + 2]).time
+        try:
+            adapter = BinanceUSDmExternalEvidenceProvider(get_json=RaceFixtureGetJson(1))
+            metrics, diagnostics = adapter.fetch_metrics("ETH")
+            evidence = build_external_market_evidence("ETH", diagnostics["snapshot_timestamp"], metrics)
+        finally:
+            provider_module.time.time = original
+        self.assertEqual(diagnostics["request_started_at"], SNAPSHOT_TS)
+        self.assertEqual(diagnostics["snapshot_timestamp"], SNAPSHOT_TS + 2)
+        self.assertEqual(metrics["funding_rate"]["source_timestamp"], SNAPSHOT_TS + 1)
+        self.assertEqual(evidence["raw_metrics"]["funding_rate"]["availability"], "AVAILABLE")
+
+    def test_future_provider_timestamp_still_rejected(self) -> None:
+        original = provider_module.time.time
+        provider_module.time.time = SequenceClock([SNAPSHOT_TS, SNAPSHOT_TS + 2]).time
+        try:
+            adapter = BinanceUSDmExternalEvidenceProvider(get_json=RaceFixtureGetJson(5))
+            metrics, diagnostics = adapter.fetch_metrics("ETH")
+        finally:
+            provider_module.time.time = original
+        with self.assertRaises(ValueError):
+            build_external_market_evidence("ETH", diagnostics["snapshot_timestamp"], metrics)
+
+    def test_multi_endpoint_uses_one_post_fetch_snapshot(self) -> None:
+        original = provider_module.time.time
+        provider_module.time.time = SequenceClock([SNAPSHOT_TS, SNAPSHOT_TS + 1]).time
+        try:
+            adapter = BinanceUSDmExternalEvidenceProvider(get_json=RaceFixtureGetJson(1))
+            metrics, diagnostics = adapter.fetch_metrics("BTC")
+            evidence = build_external_market_evidence("BTC", diagnostics["snapshot_timestamp"], metrics)
+        finally:
+            provider_module.time.time = original
+        self.assertEqual(diagnostics["snapshot_timestamp"], SNAPSHOT_TS + 1)
+        self.assertEqual(metrics["oi"]["source_timestamp"], SNAPSHOT_TS)
+        self.assertEqual(metrics["funding_rate"]["source_timestamp"], SNAPSHOT_TS + 1)
+        self.assertEqual(evidence["raw_metrics"]["oi"]["availability"], "AVAILABLE")
+        self.assertEqual(evidence["raw_metrics"]["funding_rate"]["availability"], "AVAILABLE")
 
 if __name__ == "__main__":
     unittest.main()

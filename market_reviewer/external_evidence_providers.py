@@ -263,7 +263,7 @@ class BinanceUSDmExternalEvidenceProvider:
         self._get_json = get_json or _get_json
 
     def fetch_metrics(self, symbol: str, fetch_timestamp: int | None = None) -> tuple[dict[str, dict[str, Any]], dict[str, Any]]:
-        timestamp = int(time.time()) if fetch_timestamp is None else fetch_timestamp
+        request_started_at = int(time.time()) if fetch_timestamp is None else fetch_timestamp
         mapping = instrument_mapping(symbol)
         if mapping.provider != self.name:
             raise ValueError(f"mapping provider mismatch: {symbol}")
@@ -274,12 +274,13 @@ class BinanceUSDmExternalEvidenceProvider:
                 payloads[key] = self._get_json(url)
             except OSError as exc:
                 errors[key] = exc.__class__.__name__
+        snapshot_timestamp = int(time.time()) if fetch_timestamp is None else fetch_timestamp
         metrics: dict[str, dict[str, Any]] = {}
-        metrics.update(normalize_open_interest(mapping, _dict_or_none(payloads.get("open_interest")), _list_or_empty(payloads.get("open_interest_history")), timestamp))
-        metrics.update(normalize_funding(mapping, _dict_or_none(payloads.get("premium_index")), _list_or_empty(payloads.get("funding_history")), timestamp))
-        liquidation_metrics, capability = normalize_liquidation_flow(mapping, None, timestamp, self.liquidation_history)
+        metrics.update(normalize_open_interest(mapping, _dict_or_none(payloads.get("open_interest")), _list_or_empty(payloads.get("open_interest_history")), snapshot_timestamp))
+        metrics.update(normalize_funding(mapping, _dict_or_none(payloads.get("premium_index")), _list_or_empty(payloads.get("funding_history")), snapshot_timestamp))
+        liquidation_metrics, capability = normalize_liquidation_flow(mapping, None, snapshot_timestamp, self.liquidation_history)
         metrics.update(liquidation_metrics)
-        return metrics, {"provider": self.name, "instrument": mapping.instrument, "market_type": mapping.market_type, "errors": errors, "liquidation_history": capability}
+        return metrics, {"provider": self.name, "instrument": mapping.instrument, "market_type": mapping.market_type, "errors": errors, "liquidation_history": capability, "request_started_at": request_started_at, "fetch_completed_at": snapshot_timestamp, "snapshot_timestamp": snapshot_timestamp}
 
     def _urls(self, instrument: str) -> dict[str, str]:
         return {
@@ -295,28 +296,29 @@ def build_phase1_external_evidence_artifact(
     fetch_timestamp: int | None = None,
     provider: BinanceUSDmExternalEvidenceProvider | None = None,
 ) -> dict[str, Any]:
-    timestamp = int(time.time()) if fetch_timestamp is None else fetch_timestamp
     adapter = provider or BinanceUSDmExternalEvidenceProvider()
     symbols_payload: dict[str, Any] = {}
     statuses = []
     for symbol in symbols:
         try:
-            metrics, diagnostics = adapter.fetch_metrics(symbol, timestamp)
-            evidence = build_external_market_evidence(symbol, timestamp, metrics)
+            metrics, diagnostics = adapter.fetch_metrics(symbol, fetch_timestamp)
+            snapshot_timestamp = int(diagnostics.get("snapshot_timestamp") or diagnostics.get("fetch_completed_at") or fetch_timestamp or int(time.time()))
+            evidence = build_external_market_evidence(symbol, snapshot_timestamp, metrics)
             status = _phase1_status(evidence)
             diagnostics["external_evidence_status"] = status
         except Exception as exc:  # fail-open research feed boundary
             mapping = instrument_mapping(symbol)
+            snapshot_timestamp = int(time.time()) if fetch_timestamp is None else fetch_timestamp
             metrics = {metric_id: unavailable_phase1_metric(metric_id, mapping) for metric_id in _phase1_metric_ids()}
-            evidence = build_external_market_evidence(symbol, timestamp, metrics)
-            diagnostics = {"provider": adapter.name, "instrument": mapping.instrument, "market_type": mapping.market_type, "errors": {"adapter": exc.__class__.__name__}, "liquidation_history": getattr(adapter, "liquidation_history", "UNSUPPORTED"), "external_evidence_status": "DATA_UNAVAILABLE"}
+            evidence = build_external_market_evidence(symbol, snapshot_timestamp, metrics)
+            diagnostics = {"provider": adapter.name, "instrument": mapping.instrument, "market_type": mapping.market_type, "errors": {"adapter": exc.__class__.__name__}, "liquidation_history": getattr(adapter, "liquidation_history", "UNSUPPORTED"), "external_evidence_status": "DATA_UNAVAILABLE", "snapshot_timestamp": snapshot_timestamp, "fetch_completed_at": snapshot_timestamp}
         symbols_payload[symbol] = {"evidence": evidence, "diagnostics": diagnostics}
         statuses.append(diagnostics["external_evidence_status"])
     return {
         "artifact_version": EXTERNAL_EVIDENCE_ARTIFACT_VERSION,
         "schema_version": "external-market-evidence.v1",
         "provider": adapter.name,
-        "fetch_timestamp": timestamp,
+        "fetch_timestamp": max(int(payload["evidence"]["snapshot_timestamp"]) for payload in symbols_payload.values()) if symbols_payload else (fetch_timestamp or int(time.time())),
         "symbols": symbols_payload,
         "external_evidence_status": "AVAILABLE" if all(status == "AVAILABLE" for status in statuses) else "PARTIAL" if any(status in {"AVAILABLE", "PARTIAL"} for status in statuses) else "DATA_UNAVAILABLE",
     }
