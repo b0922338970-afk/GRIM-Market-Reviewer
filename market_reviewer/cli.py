@@ -7,6 +7,7 @@ from pathlib import Path
 
 from .external import run_external_fetch
 from .external_evidence_providers import run_external_evidence_fetch
+from .liquidation_collector import collect_liquidations, liquidation_status
 from .review_only import run_review_only
 
 
@@ -20,6 +21,11 @@ def build_parser() -> argparse.ArgumentParser:
     fetch.add_argument("--output-dir", default="artifact", help="Directory for market-data-v1.json")
     evidence = subparsers.add_parser("fetch-external-evidence", help="Fetch research-only external-market-evidence.v1 artifact")
     evidence.add_argument("--output-dir", default="artifact", help="Directory for external-market-evidence-v1.json")
+    liquidations = subparsers.add_parser("collect-liquidations", help="Collect research-only liquidation stream events")
+    liquidations.add_argument("--root", default="artifact/liquidations", help="Directory for liquidation event store")
+    liquidations.add_argument("--duration", type=int, default=30, help="Collection duration in seconds")
+    liq_status = subparsers.add_parser("liquidation-status", help="Show research-only liquidation collector status")
+    liq_status.add_argument("--root", default="artifact/liquidations", help="Directory for liquidation event store")
     return parser
 
 
@@ -36,6 +42,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "fetch-external-evidence":
         path = run_external_evidence_fetch(Path(args.output_dir))
         print(path)
+        return 0
+    if args.command == "collect-liquidations":
+        import json
+        print(json.dumps(collect_liquidations(Path(args.root), args.duration), indent=2, sort_keys=True))
+        return 0
+    if args.command == "liquidation-status":
+        import json
+        print(json.dumps(liquidation_status(Path(args.root)), indent=2, sort_keys=True))
         return 0
     parser.print_help()
     return 0

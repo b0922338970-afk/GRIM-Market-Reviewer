@@ -4,6 +4,7 @@ __all__ = [
     "connectivity",
     "external_evidence",
     "external_evidence_providers",
+    "liquidation_collector",
     "external",
     "model",
     "pipeline",
