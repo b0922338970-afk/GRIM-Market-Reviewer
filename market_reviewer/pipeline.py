@@ -22,16 +22,27 @@ def load_snapshot(path: Path) -> dict[str, dict]:
     return data
 
 
+
+def candle_effective_close_timestamp(candle_open_timestamp: int, timeframe: str) -> int:
+    return candle_open_timestamp + TIMEFRAME_SECONDS[timeframe]
+
+
+def is_candle_available_at_checkpoint(candle, timeframe: str, checkpoint: int) -> bool:
+    return candle_effective_close_timestamp(candle.timestamp, timeframe) <= checkpoint
+
 def _frame_at_checkpoint(frame: MarketDataFrame, checkpoint: int) -> MarketDataFrame:
-    global_close_time = checkpoint + TIMEFRAME_SECONDS["M5"]
-    closed = [candle for candle in frame.candles if candle.timestamp + TIMEFRAME_SECONDS[frame.timeframe] <= global_close_time]
+    closed = [
+        candle
+        for candle in frame.candles
+        if is_candle_available_at_checkpoint(candle, frame.timeframe, checkpoint)
+    ]
     if not closed:
         raise DataUnavailable("checkpoint has no closed candles")
     latest_closed = closed[-1].timestamp
     current_open = next((candle for candle in frame.candles if candle.timestamp > latest_closed), None)
     candles = [candle for candle in frame.candles if candle.timestamp <= latest_closed]
     current_open_timestamp = None
-    if current_open and current_open.timestamp + TIMEFRAME_SECONDS[frame.timeframe] > global_close_time:
+    if current_open and not is_candle_available_at_checkpoint(current_open, frame.timeframe, checkpoint):
         candles.append(current_open)
         current_open_timestamp = current_open.timestamp
     return replace(
@@ -45,7 +56,7 @@ def _frame_at_checkpoint(frame: MarketDataFrame, checkpoint: int) -> MarketDataF
 
 def _m5_checkpoints(frames: dict[str, MarketDataFrame], previous_timestamp: int) -> list[int]:
     return [
-        candle.timestamp
+        candle_effective_close_timestamp(candle.timestamp, "M5")
         for candle in frames["M5"].closed_candles()
         if candle.timestamp > previous_timestamp
     ]
