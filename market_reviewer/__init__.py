@@ -2,6 +2,7 @@
 
 __all__ = [
     "connectivity",
+    "external_evidence",
     "external",
     "model",
     "pipeline",
