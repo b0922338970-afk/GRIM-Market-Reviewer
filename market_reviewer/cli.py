@@ -6,6 +6,7 @@ import argparse
 from pathlib import Path
 
 from .external import run_external_fetch
+from .external_evidence_providers import run_external_evidence_fetch
 from .review_only import run_review_only
 
 
@@ -17,6 +18,8 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--thesis", help="Optional previous thesis JSON path")
     fetch = subparsers.add_parser("fetch-external", help="Fetch BTC/ETH market-data.v1 artifact")
     fetch.add_argument("--output-dir", default="artifact", help="Directory for market-data-v1.json")
+    evidence = subparsers.add_parser("fetch-external-evidence", help="Fetch research-only external-market-evidence.v1 artifact")
+    evidence.add_argument("--output-dir", default="artifact", help="Directory for external-market-evidence-v1.json")
     return parser
 
 
@@ -28,6 +31,10 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     if args.command == "fetch-external":
         path = run_external_fetch(Path(args.output_dir))
+        print(path)
+        return 0
+    if args.command == "fetch-external-evidence":
+        path = run_external_evidence_fetch(Path(args.output_dir))
         print(path)
         return 0
     parser.print_help()

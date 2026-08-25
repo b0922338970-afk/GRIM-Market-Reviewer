@@ -43,6 +43,12 @@ EXTERNAL_RAW_METRIC_IDS = {
     "Liquidation": (
         "long_liquidation_notional",
         "short_liquidation_notional",
+        "long_liquidation_notional_5m",
+        "short_liquidation_notional_5m",
+        "long_liquidation_notional_15m",
+        "short_liquidation_notional_15m",
+        "long_liquidation_notional_1h",
+        "short_liquidation_notional_1h",
         "nearest_long_liq_cluster",
         "nearest_short_liq_cluster",
         "liq_cluster_distance_pct",
@@ -69,10 +75,19 @@ class ExternalMetric:
     time_window: str
     availability: str
     evidence_id: str
+    provider: str
+    market_type: str
+    symbol: str
+    instrument: str
+    fetch_timestamp: int | None
+    raw_unit: str
+    normalized_unit: str
+    raw_value: Any
+    semantics: str
 
 
 def unavailable_metric(metric_id: str, source: str = "NONE", time_window: str = "NONE") -> dict[str, Any]:
-    return asdict(ExternalMetric(metric_id, None, source, None, None, time_window, "UNAVAILABLE", f"UNAVAILABLE:{metric_id}"))
+    return asdict(ExternalMetric(metric_id, None, source, None, None, time_window, "UNAVAILABLE", f"UNAVAILABLE:{metric_id}", source, "NONE", "NONE", "NONE", None, "NONE", "NONE", None, "OBSERVED"))
 
 
 def metric(
@@ -84,6 +99,15 @@ def metric(
     time_window: str,
     availability: str = "AVAILABLE",
     evidence_id: str | None = None,
+    provider: str | None = None,
+    market_type: str = "UNKNOWN",
+    symbol: str = "UNKNOWN",
+    instrument: str = "UNKNOWN",
+    fetch_timestamp: int | None = None,
+    raw_unit: str = "UNKNOWN",
+    normalized_unit: str = "UNKNOWN",
+    raw_value: Any = None,
+    semantics: str = "OBSERVED",
 ) -> dict[str, Any]:
     if availability not in AVAILABILITY_STATES:
         raise ValueError(f"invalid availability: {availability}")
@@ -97,6 +121,15 @@ def metric(
             time_window=time_window,
             availability=availability,
             evidence_id=evidence_id or f"{source}:{metric_id}:{source_timestamp}",
+            provider=provider or source,
+            market_type=market_type,
+            symbol=symbol,
+            instrument=instrument,
+            fetch_timestamp=fetch_timestamp,
+            raw_unit=raw_unit,
+            normalized_unit=normalized_unit,
+            raw_value=value if raw_value is None else raw_value,
+            semantics=semantics,
         )
     )
 
@@ -142,9 +175,9 @@ def relation_features_from_metrics(
 
     cluster_distance = _available_number(metrics.get("liq_cluster_distance_pct"))
     liq_asymmetry = _available_number(metrics.get("liq_cluster_asymmetry"))
-    long_liq = _available_number(metrics.get("long_liquidation_notional"))
-    short_liq = _available_number(metrics.get("short_liquidation_notional"))
-    features["LIQUIDATION_CONTEXT_RELATION"] = _feature("LIQUIDATION_CONTEXT_RELATION", "LIQUIDATION_CONTEXT", "OBSERVATION_FEATURE", classify_liquidation_relation(cluster_distance, liq_asymmetry, long_liq, short_liq), snapshot_timestamp, _evidence(metrics, ("liq_cluster_distance_pct", "liq_cluster_asymmetry", "long_liquidation_notional", "short_liquidation_notional")))
+    long_liq = _first_number(metrics, ("long_liquidation_notional_5m", "long_liquidation_notional_15m", "long_liquidation_notional_1h", "long_liquidation_notional"))
+    short_liq = _first_number(metrics, ("short_liquidation_notional_5m", "short_liquidation_notional_15m", "short_liquidation_notional_1h", "short_liquidation_notional"))
+    features["LIQUIDATION_CONTEXT_RELATION"] = _feature("LIQUIDATION_CONTEXT_RELATION", "LIQUIDATION_CONTEXT", "OBSERVATION_FEATURE", classify_liquidation_relation(cluster_distance, liq_asymmetry, long_liq, short_liq), snapshot_timestamp, _evidence(metrics, ("liq_cluster_distance_pct", "liq_cluster_asymmetry", "long_liquidation_notional_5m", "short_liquidation_notional_5m", "long_liquidation_notional_15m", "short_liquidation_notional_15m", "long_liquidation_notional_1h", "short_liquidation_notional_1h", "long_liquidation_notional", "short_liquidation_notional")))
 
     buy = _available_number(metrics.get("large_buy_notional"))
     sell = _available_number(metrics.get("large_sell_notional"))
