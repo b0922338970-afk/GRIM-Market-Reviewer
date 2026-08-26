@@ -8,6 +8,7 @@ review state.
 from __future__ import annotations
 
 import argparse
+import atexit
 import base64
 import os
 import hashlib
@@ -15,6 +16,7 @@ import json
 import socket
 import ssl
 import struct
+import subprocess
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -108,6 +110,7 @@ class CoverageStore:
         _close_open_interval(coverage, int(coverage.get("last_transport_alive_at") or timestamp))
         coverage["collector_started_at"] = coverage.get("collector_started_at") or timestamp
         coverage["collector_stopped_at"] = None
+        coverage["collector_process_id"] = os.getpid()
         coverage["last_transport_alive_at"] = timestamp
         coverage.setdefault("coverage_intervals", []).append({"start": timestamp, "end": None, "status": CONNECTED_INTERVAL_STATUS})
         coverage["coverage_status"] = COVERAGE_COMPLETE
@@ -151,6 +154,7 @@ class CoverageStore:
         coverage.setdefault("reconnect_intervals", []).append({"timestamp": timestamp})
         coverage.setdefault("coverage_intervals", []).append({"start": timestamp, "end": None, "status": CONNECTED_INTERVAL_STATUS})
         coverage["collector_stopped_at"] = None
+        coverage["collector_process_id"] = os.getpid()
         coverage["last_transport_alive_at"] = timestamp
         coverage["coverage_status"] = COVERAGE_COMPLETE
         self.save(symbol, coverage)
@@ -159,6 +163,7 @@ class CoverageStore:
     def mark_stopped(self, symbol: str, timestamp: int) -> dict[str, Any]:
         coverage = self.load(symbol)
         coverage["collector_stopped_at"] = timestamp
+        coverage["collector_process_id"] = None
         _close_open_interval(coverage, timestamp)
         coverage["last_transport_alive_at"] = coverage.get("last_transport_alive_at") or timestamp
         coverage["coverage_status"] = COVERAGE_UNAVAILABLE
@@ -291,6 +296,7 @@ def liquidation_status(root: Path, symbols: tuple[str, ...] = ACTIVE_SYMBOLS) ->
     statuses = []
     for symbol in symbols:
         coverage = coverage_store.load(symbol)
+        coverage = _close_dead_collector_process(coverage_store, symbol, coverage)
         disconnects = coverage.get("disconnect_intervals", [])
         connected = coverage.get("collector_stopped_at") is None and _has_open_connected_interval(coverage)
         statuses.append(
@@ -299,6 +305,7 @@ def liquidation_status(root: Path, symbols: tuple[str, ...] = ACTIVE_SYMBOLS) ->
                 "connected": connected,
                 "coverage_start": coverage.get("collector_started_at"),
                 "collector_stopped_at": coverage.get("collector_stopped_at"),
+                "collector_process_id": coverage.get("collector_process_id"),
                 "coverage_intervals": coverage.get("coverage_intervals", []),
                 "last_transport_alive_at": coverage.get("last_transport_alive_at"),
                 "last_message": coverage.get("last_stream_message_at"),
@@ -311,7 +318,7 @@ def liquidation_status(root: Path, symbols: tuple[str, ...] = ACTIVE_SYMBOLS) ->
     return statuses
 
 
-def collect_liquidations(root: Path, duration_seconds: int = 30, symbols: tuple[str, ...] = ACTIVE_SYMBOLS) -> dict[str, Any]:
+def collect_liquidations(root: Path, duration_seconds: int | None = None, symbols: tuple[str, ...] = ACTIVE_SYMBOLS) -> dict[str, Any]:
     store = LiquidationEventStore(root)
     coverage = CoverageStore(root)
     now = int(time.time())
@@ -319,40 +326,65 @@ def collect_liquidations(root: Path, duration_seconds: int = 30, symbols: tuple[
         coverage.mark_started(symbol, now)
     stream_url = _stream_url(symbols)
     received = 0
+    deadline = None if duration_seconds is None else time.time() + duration_seconds
+    shutdown_hook = lambda: _mark_collector_stopped(coverage, symbols)
+    atexit.register(shutdown_hook)
     try:
-        for payload in _read_websocket_json(stream_url, duration_seconds):
-            received_at = int(time.time())
-            for active_symbol in symbols:
-                coverage.mark_transport_alive(active_symbol, received_at)
-            if payload is None:
+        while _runtime_active(deadline):
+            try:
+                for payload in _read_websocket_json(stream_url, _remaining_seconds(deadline)):
+                    received_at = int(time.time())
+                    for active_symbol in symbols:
+                        coverage.mark_transport_alive(active_symbol, received_at)
+                    if payload is None:
+                        continue
+                    stream = str(payload.get("stream", ""))
+                    data = payload.get("data", payload)
+                    raw_symbol = str(data.get("o", data).get("s", ""))
+                    symbol = raw_symbol.removesuffix("USDT")
+                    if symbol in symbols:
+                        coverage.mark_message(symbol, received_at, event_received=True)
+                        if store.append(parse_binance_force_order(data, received_at)):
+                            received += 1
+                    for active_symbol in symbols:
+                        if stream.startswith(active_symbol.lower()):
+                            coverage.mark_message(active_symbol, received_at)
+                    if not _runtime_active(deadline):
+                        break
+            except KeyboardInterrupt:
+                raise
+            except Exception as exc:
+                failed_at = int(time.time())
+                for symbol in symbols:
+                    coverage.mark_disconnect(symbol, failed_at, exc.__class__.__name__)
+                if not _runtime_active(deadline):
+                    break
+                time.sleep(min(1.0, _remaining_seconds(deadline) or 1.0))
+                reconnect_at = int(time.time())
+                for symbol in symbols:
+                    coverage.mark_reconnect(symbol, reconnect_at)
                 continue
-            stream = str(payload.get("stream", ""))
-            data = payload.get("data", payload)
-            raw_symbol = str(data.get("o", data).get("s", ""))
-            symbol = raw_symbol.removesuffix("USDT")
-            if symbol in symbols:
-                coverage.mark_message(symbol, received_at, event_received=True)
-                if store.append(parse_binance_force_order(data, received_at)):
-                    received += 1
-            for active_symbol in symbols:
-                if stream.startswith(active_symbol.lower()):
-                    coverage.mark_message(active_symbol, received_at)
-    except Exception as exc:
-        failed_at = int(time.time())
-        for symbol in symbols:
-            coverage.mark_disconnect(symbol, failed_at, exc.__class__.__name__)
-        return {"connected": False, "received_event_count": received, "error": exc.__class__.__name__, "status": liquidation_status(root, symbols)}
+    except KeyboardInterrupt:
+        _mark_collector_stopped(coverage, symbols)
+        atexit.unregister(shutdown_hook)
+        return {"connected": False, "completed": False, "stopped_by": "KeyboardInterrupt", "received_event_count": received, "status": liquidation_status(root, symbols)}
+    _mark_collector_stopped(coverage, symbols)
+    atexit.unregister(shutdown_hook)
+    return {"connected": False, "completed": True, "received_event_count": received, "status": liquidation_status(root, symbols)}
+
+
+def _mark_collector_stopped(coverage: CoverageStore, symbols: tuple[str, ...]) -> int:
     stopped_at = int(time.time())
     for symbol in symbols:
         coverage.mark_stopped(symbol, stopped_at)
-    return {"connected": False, "completed": True, "received_event_count": received, "status": liquidation_status(root, symbols)}
+    return stopped_at
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="liquidation-collector")
     parser.add_argument("command", choices=("collect", "status"))
     parser.add_argument("--root", default="artifact/liquidations")
-    parser.add_argument("--duration", type=int, default=30)
+    parser.add_argument("--duration", type=int, default=None)
     args = parser.parse_args(argv)
     root = Path(args.root)
     if args.command == "collect":
@@ -360,6 +392,41 @@ def main(argv: list[str] | None = None) -> int:
     else:
         print(json.dumps(liquidation_status(root), indent=2, sort_keys=True))
     return 0
+
+
+def _close_dead_collector_process(coverage_store: CoverageStore, symbol: str, coverage: dict[str, Any]) -> dict[str, Any]:
+    if coverage.get("collector_stopped_at") is not None or not _has_open_connected_interval(coverage):
+        return coverage
+    pid = coverage.get("collector_process_id")
+    if pid is None or _process_is_alive(int(pid)):
+        return coverage
+    stopped_at = int(coverage.get("last_transport_alive_at") or time.time())
+    return coverage_store.mark_stopped(symbol, stopped_at)
+
+
+def _process_is_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    if pid == os.getpid():
+        return True
+    if os.name != "nt":
+        try:
+            os.kill(pid, 0)
+        except OSError:
+            return False
+        return True
+    try:
+        result = subprocess.run(
+            ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except Exception:
+        return True
+    output = result.stdout.strip()
+    return bool(output and "No tasks are running" not in output and str(pid) in output)
 
 
 def _window_coverage_status(coverage: dict[str, Any], snapshot_timestamp: int, seconds: int) -> str:
@@ -396,7 +463,7 @@ def _stream_url(symbols: tuple[str, ...]) -> str:
     return BINANCE_USDM_FORCE_ORDER_STREAM + streams
 
 
-def _read_websocket_json(url: str, duration_seconds: int) -> Iterable[dict[str, Any] | None]:
+def _read_websocket_json(url: str, duration_seconds: float | None) -> Iterable[dict[str, Any] | None]:
     # Minimal websocket client for dry-run connectivity without adding deps.
     if not url.startswith("wss://"):
         raise ValueError("only wss websocket URLs are supported")
@@ -404,7 +471,7 @@ def _read_websocket_json(url: str, duration_seconds: int) -> Iterable[dict[str, 
     host, path = host_and_path.split("/", 1)
     path = "/" + path
     key = "R1JJTS1NYXJrZXQtUmV2aWV3ZXI="
-    deadline = time.time() + duration_seconds
+    deadline = None if duration_seconds is None else time.time() + duration_seconds
     with socket.create_connection((host, 443), timeout=10) as raw_socket:
         with ssl.create_default_context().wrap_socket(raw_socket, server_hostname=host) as sock:
             request = (
@@ -420,7 +487,7 @@ def _read_websocket_json(url: str, duration_seconds: int) -> Iterable[dict[str, 
             if b" 101 " not in response.split(b"\r\n", 1)[0]:
                 raise ConnectionError("websocket upgrade failed")
             sock.settimeout(1)
-            while time.time() < deadline:
+            while _runtime_active(deadline):
                 try:
                     message = _read_ws_message(sock)
                 except TimeoutError:
@@ -428,6 +495,16 @@ def _read_websocket_json(url: str, duration_seconds: int) -> Iterable[dict[str, 
                     continue
                 if message:
                     yield json.loads(message)
+
+
+def _runtime_active(deadline: float | None) -> bool:
+    return deadline is None or time.time() < deadline
+
+
+def _remaining_seconds(deadline: float | None) -> float | None:
+    if deadline is None:
+        return None
+    return max(0.0, deadline - time.time())
 
 
 def _read_ws_message(sock: ssl.SSLSocket) -> str | None:
@@ -467,6 +544,7 @@ def _empty_coverage(symbol: str) -> dict[str, Any]:
         "symbol": symbol,
         "collector_started_at": None,
         "collector_stopped_at": None,
+        "collector_process_id": None,
         "last_transport_alive_at": None,
         "last_event_received_at": None,
         "last_stream_message_at": None,

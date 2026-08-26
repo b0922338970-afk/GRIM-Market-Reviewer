@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import tempfile
@@ -340,5 +341,164 @@ class LiquidationCollectorV425Tests(unittest.TestCase):
         self.assertEqual(complete_metrics["long_liquidation_notional_5m"]["value"], 0)
         self.assertEqual(partial_metrics["long_liquidation_notional_5m"]["availability"], "PARTIAL")
         self.assertIsNone(partial_metrics["long_liquidation_notional_5m"]["value"])
+
+    def test_default_collector_has_no_30s_lifetime(self) -> None:
+        default = inspect.signature(collector_module.collect_liquidations).parameters["duration_seconds"].default
+        self.assertIsNone(default)
+        from market_reviewer.cli import build_parser
+
+        args = build_parser().parse_args(["collect-liquidations"])
+        self.assertIsNone(args.duration)
+
+    def test_read_timeout_tick_does_not_stop_or_disconnect_collector(self) -> None:
+        original = collector_module._read_websocket_json
+
+        def quiet_then_interrupt(_url, _duration):
+            yield None
+            raise KeyboardInterrupt
+
+        try:
+            collector_module._read_websocket_json = quiet_then_interrupt
+            with tempfile.TemporaryDirectory() as directory:
+                result = collector_module.collect_liquidations(Path(directory), symbols=("BTC",))
+        finally:
+            collector_module._read_websocket_json = original
+        self.assertEqual(result["stopped_by"], "KeyboardInterrupt")
+        self.assertEqual(result["status"][0]["disconnect_count"], 0)
+        self.assertIsNotNone(result["status"][0]["last_transport_alive_at"])
+
+    def test_quiet_market_keeps_runtime_alive_until_explicit_stop(self) -> None:
+        original = collector_module._read_websocket_json
+
+        def quiet_then_interrupt(_url, _duration):
+            yield None
+            yield None
+            raise KeyboardInterrupt
+
+        try:
+            collector_module._read_websocket_json = quiet_then_interrupt
+            with tempfile.TemporaryDirectory() as directory:
+                result = collector_module.collect_liquidations(Path(directory), symbols=("BTC",))
+        finally:
+            collector_module._read_websocket_json = original
+        self.assertFalse(result["connected"])
+        self.assertEqual(result["stopped_by"], "KeyboardInterrupt")
+        self.assertEqual(result["received_event_count"], 0)
+        self.assertEqual(result["status"][0]["disconnect_count"], 0)
+
+    def test_explicit_bounded_duration_still_closes_cleanly(self) -> None:
+        original = collector_module._read_websocket_json
+        calls = []
+
+        def quiet(_url, duration):
+            calls.append(duration)
+            yield None
+
+        try:
+            collector_module._read_websocket_json = quiet
+            with tempfile.TemporaryDirectory() as directory:
+                result = collector_module.collect_liquidations(Path(directory), duration_seconds=0.01, symbols=("BTC",))
+        finally:
+            collector_module._read_websocket_json = original
+        self.assertTrue(result["completed"])
+        self.assertFalse(result["status"][0]["connected"])
+        self.assertTrue(all(call is not None for call in calls))
+
+    def test_keyboard_interrupt_performs_clean_shutdown(self) -> None:
+        original = collector_module._read_websocket_json
+
+        def interrupt(_url, _duration):
+            raise KeyboardInterrupt
+            yield None
+
+        try:
+            collector_module._read_websocket_json = interrupt
+            with tempfile.TemporaryDirectory() as directory:
+                result = collector_module.collect_liquidations(Path(directory), symbols=("BTC",))
+        finally:
+            collector_module._read_websocket_json = original
+        self.assertEqual(result["stopped_by"], "KeyboardInterrupt")
+        self.assertFalse(result["status"][0]["connected"])
+        self.assertIsNotNone(result["status"][0]["collector_stopped_at"])
+        self.assertIsNotNone(result["status"][0]["coverage_intervals"][-1]["end"])
+
+    def test_heartbeat_continues_without_force_order_messages(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coverage = CoverageStore(root)
+            coverage.mark_started("BTC", SNAPSHOT_TS - 10)
+            coverage.mark_transport_alive("BTC", SNAPSHOT_TS)
+            status = liquidation_status(root, symbols=("BTC",))[0]
+        self.assertTrue(status["connected"])
+        self.assertEqual(status["last_transport_alive_at"], SNAPSHOT_TS)
+        self.assertIsNone(status["coverage_intervals"][-1]["end"])
+
+    def test_reconnect_path_records_gap_and_reopens_interval(self) -> None:
+        original_read = collector_module._read_websocket_json
+        original_sleep = collector_module.time.sleep
+        calls = {"count": 0}
+
+        def disconnect_then_interrupt(_url, _duration):
+            calls["count"] += 1
+            if calls["count"] == 1:
+                raise ConnectionError("socket closed")
+            raise KeyboardInterrupt
+            yield None
+
+        try:
+            collector_module._read_websocket_json = disconnect_then_interrupt
+            collector_module.time.sleep = lambda _seconds: None
+            with tempfile.TemporaryDirectory() as directory:
+                result = collector_module.collect_liquidations(Path(directory), symbols=("BTC",))
+        finally:
+            collector_module._read_websocket_json = original_read
+            collector_module.time.sleep = original_sleep
+        status = result["status"][0]
+        self.assertEqual(status["disconnect_count"], 1)
+        self.assertEqual(len(status["coverage_intervals"]), 2)
+        self.assertIsNotNone(status["coverage_intervals"][0]["end"])
+
+    def test_open_coverage_interval_remains_open_while_alive(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coverage = CoverageStore(root)
+            coverage.mark_started("BTC", SNAPSHOT_TS)
+            status = liquidation_status(root, symbols=("BTC",))[0]
+        self.assertTrue(status["connected"])
+        self.assertIsNone(status["collector_stopped_at"])
+        self.assertIsNone(status["coverage_intervals"][-1]["end"])
+
+    def test_no_event_runtime_does_not_create_false_gap(self) -> None:
+        coverage = self.transport_coverage(SNAPSHOT_TS - 600, SNAPSHOT_TS)
+        coverage["last_stream_message_at"] = SNAPSHOT_TS - 600
+        coverage["disconnect_intervals"] = []
+        result = aggregate_liquidations([], coverage, SNAPSHOT_TS, windows=(300,))
+        self.assertEqual(result["5m"]["coverage_status"], COVERAGE_COMPLETE)
+        self.assertEqual(result["5m"]["total_liquidation_notional"], 0)
+
+    def test_status_keeps_current_pid_interval_open(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coverage = CoverageStore(root)
+            coverage.mark_started("BTC", SNAPSHOT_TS)
+            status = liquidation_status(root, symbols=("BTC",))[0]
+        self.assertTrue(status["connected"])
+        self.assertEqual(status["collector_process_id"], os.getpid())
+        self.assertIsNone(status["coverage_intervals"][-1]["end"])
+
+    def test_status_closes_dead_pid_interval_at_last_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coverage_store = CoverageStore(root)
+            coverage = complete_coverage(started=SNAPSHOT_TS - 60, last=SNAPSHOT_TS)
+            coverage["collector_stopped_at"] = None
+            coverage["collector_process_id"] = 99999999
+            coverage["coverage_intervals"] = [{"start": SNAPSHOT_TS - 60, "end": None, "status": "CONNECTED"}]
+            coverage_store.save("BTC", coverage)
+            status = liquidation_status(root, symbols=("BTC",))[0]
+        self.assertFalse(status["connected"])
+        self.assertIsNone(status["collector_process_id"])
+        self.assertEqual(status["collector_stopped_at"], SNAPSHOT_TS)
+        self.assertEqual(status["coverage_intervals"][-1]["end"], SNAPSHOT_TS)
 if __name__ == "__main__":
     unittest.main()

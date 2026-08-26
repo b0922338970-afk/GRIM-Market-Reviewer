@@ -36,7 +36,7 @@ def build_parser() -> argparse.ArgumentParser:
     evidence.add_argument("--output-dir", default="artifact", help="Directory for external-market-evidence-v1.json")
     liquidations = subparsers.add_parser("collect-liquidations", help="Collect research-only liquidation stream events")
     liquidations.add_argument("--root", default="artifact/liquidations", help="Directory for liquidation event store")
-    liquidations.add_argument("--duration", type=int, default=30, help="Collection duration in seconds")
+    liquidations.add_argument("--duration", type=int, default=None, help="Optional bounded collection duration in seconds")
     liq_status = subparsers.add_parser("liquidation-status", help="Show research-only liquidation collector status")
     liq_status.add_argument("--root", default="artifact/liquidations", help="Directory for liquidation event store")
     return parser
