@@ -8,6 +8,7 @@ from pathlib import Path
 
 os._walk_symlinks_as_files = False
 
+from market_reviewer import liquidation_collector as collector_module
 from market_reviewer.external_evidence import build_external_market_evidence
 from market_reviewer.liquidation_collector import (
     COVERAGE_COMPLETE,
@@ -230,5 +231,114 @@ class LiquidationCollectorV425Tests(unittest.TestCase):
             self.assertEqual(metrics["long_liquidation_notional_5m"]["value"], 200.0)
 
 
+    def transport_coverage(self, start: int, end: int, symbol: str = "BTC", last_message: int | None = None) -> dict:
+        coverage = complete_coverage(symbol=symbol, started=start, last=last_message or start)
+        coverage["collector_stopped_at"] = end
+        coverage["last_transport_alive_at"] = end
+        coverage["coverage_intervals"] = [{"start": start, "end": end, "status": "CONNECTED"}]
+        return coverage
+
+    def test_quiet_connected_5m_window_is_complete_zero(self) -> None:
+        coverage = self.transport_coverage(SNAPSHOT_TS - 600, SNAPSHOT_TS)
+        result = aggregate_liquidations([], coverage, SNAPSHOT_TS)
+        self.assertEqual(result["5m"]["coverage_status"], COVERAGE_COMPLETE)
+        self.assertEqual(result["5m"]["long_liquidation_notional"], 0)
+        self.assertEqual(result["5m"]["short_liquidation_notional"], 0)
+
+    def test_quiet_connected_15m_window_is_complete_zero(self) -> None:
+        coverage = self.transport_coverage(SNAPSHOT_TS - 1200, SNAPSHOT_TS)
+        result = aggregate_liquidations([], coverage, SNAPSHOT_TS)
+        self.assertEqual(result["15m"]["coverage_status"], COVERAGE_COMPLETE)
+        self.assertEqual(result["15m"]["total_liquidation_notional"], 0)
+
+    def test_quiet_connected_1h_window_is_complete_zero(self) -> None:
+        coverage = self.transport_coverage(SNAPSHOT_TS - 4000, SNAPSHOT_TS)
+        result = aggregate_liquidations([], coverage, SNAPSHOT_TS)
+        self.assertEqual(result["1h"]["coverage_status"], COVERAGE_COMPLETE)
+        self.assertEqual(result["1h"]["total_liquidation_notional"], 0)
+
+    def test_fully_before_collector_start_is_unavailable(self) -> None:
+        coverage = self.transport_coverage(SNAPSHOT_TS, SNAPSHOT_TS + 600)
+        result = aggregate_liquidations([], coverage, SNAPSHOT_TS - 1)
+        self.assertEqual(result["5m"]["coverage_status"], COVERAGE_UNAVAILABLE)
+
+    def test_half_before_start_is_partial(self) -> None:
+        coverage = self.transport_coverage(SNAPSHOT_TS - 150, SNAPSHOT_TS + 600)
+        result = aggregate_liquidations([], coverage, SNAPSHOT_TS)
+        self.assertEqual(result["5m"]["coverage_status"], COVERAGE_PARTIAL)
+
+    def test_disconnect_overlap_window_is_partial(self) -> None:
+        coverage = self.transport_coverage(SNAPSHOT_TS - 600, SNAPSHOT_TS)
+        coverage["coverage_intervals"] = [
+            {"start": SNAPSHOT_TS - 600, "end": SNAPSHOT_TS - 200, "status": "CONNECTED"},
+            {"start": SNAPSHOT_TS - 100, "end": SNAPSHOT_TS, "status": "CONNECTED"},
+        ]
+        coverage["disconnect_intervals"] = [{"start": SNAPSHOT_TS - 200, "end": SNAPSHOT_TS - 100, "reason": "TEST"}]
+        result = aggregate_liquidations([], coverage, SNAPSHOT_TS)
+        self.assertEqual(result["5m"]["coverage_status"], COVERAGE_PARTIAL)
+
+    def test_old_last_stream_message_with_current_heartbeat_is_complete(self) -> None:
+        coverage = self.transport_coverage(SNAPSHOT_TS - 600, SNAPSHOT_TS, last_message=SNAPSHOT_TS - 600)
+        result = aggregate_liquidations([], coverage, SNAPSHOT_TS)
+        self.assertEqual(result["5m"]["coverage_status"], COVERAGE_COMPLETE)
+        self.assertEqual(result["5m"]["total_liquidation_notional"], 0)
+
+    def test_clean_shutdown_closes_coverage_interval_and_status_false(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            coverage = CoverageStore(root)
+            coverage.mark_started("BTC", SNAPSHOT_TS - 100)
+            coverage.mark_transport_alive("BTC", SNAPSHOT_TS)
+            stopped = coverage.mark_stopped("BTC", SNAPSHOT_TS + 1)
+            status = liquidation_status(root, symbols=("BTC",))[0]
+        self.assertEqual(stopped["coverage_intervals"][-1]["end"], SNAPSHOT_TS + 1)
+        self.assertFalse(status["connected"])
+
+    def test_collect_clean_shutdown_top_level_connected_false(self) -> None:
+        original = collector_module._read_websocket_json
+        try:
+            collector_module._read_websocket_json = lambda _url, _duration: iter([None])
+            with tempfile.TemporaryDirectory() as directory:
+                result = collector_module.collect_liquidations(Path(directory), duration_seconds=1, symbols=("BTC",))
+        finally:
+            collector_module._read_websocket_json = original
+        self.assertFalse(result["connected"])
+        self.assertTrue(result["completed"])
+        self.assertFalse(result["status"][0]["connected"])
+    def test_reconnect_creates_second_transport_interval(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            coverage = CoverageStore(Path(directory))
+            coverage.mark_started("BTC", SNAPSHOT_TS - 1000)
+            coverage.mark_disconnect("BTC", SNAPSHOT_TS - 500, "TEST")
+            value = coverage.mark_reconnect("BTC", SNAPSHOT_TS - 100)
+        self.assertEqual(len(value["coverage_intervals"]), 2)
+        self.assertEqual(value["coverage_intervals"][0]["end"], SNAPSHOT_TS - 500)
+        self.assertIsNone(value["coverage_intervals"][1]["end"])
+
+    def test_restart_does_not_bridge_unknown_gap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            coverage = CoverageStore(Path(directory))
+            coverage.mark_started("BTC", 1000)
+            coverage.mark_transport_alive("BTC", 1100)
+            coverage.mark_started("BTC", 2000)
+            loaded = coverage.load("BTC")
+        self.assertEqual(loaded["coverage_intervals"][0], {"start": 1000, "end": 1100, "status": "CONNECTED"})
+        self.assertEqual(loaded["coverage_intervals"][1], {"start": 2000, "end": None, "status": "CONNECTED"})
+        result = aggregate_liquidations([], loaded, 1500, windows=(300,))
+        self.assertEqual(result["5m"]["coverage_status"], COVERAGE_UNAVAILABLE)
+
+    def test_zero_complete_metrics_available_but_partial_metrics_missing(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            store = LiquidationEventStore(root)
+            coverage = CoverageStore(root)
+            coverage.save("BTC", self.transport_coverage(SNAPSHOT_TS - 600, SNAPSHOT_TS))
+            complete_metrics = liquidation_metrics_from_store(store, coverage, "BTC", SNAPSHOT_TS)
+            coverage.save("BTC", self.transport_coverage(SNAPSHOT_TS - 100, SNAPSHOT_TS))
+            partial_metrics = liquidation_metrics_from_store(store, coverage, "BTC", SNAPSHOT_TS)
+        self.assertEqual(complete_metrics["long_liquidation_notional_5m"]["availability"], "AVAILABLE")
+        self.assertEqual(complete_metrics["long_liquidation_notional_5m"]["value"], 0)
+        self.assertEqual(partial_metrics["long_liquidation_notional_5m"]["availability"], "PARTIAL")
+        self.assertIsNone(partial_metrics["long_liquidation_notional_5m"]["value"])
 if __name__ == "__main__":
     unittest.main()

@@ -30,6 +30,7 @@ LIQUIDATION_STORE_VERSION = "liquidation-event-store.v1"
 COVERAGE_COMPLETE = "COMPLETE"
 COVERAGE_PARTIAL = "PARTIAL"
 COVERAGE_UNAVAILABLE = "UNAVAILABLE"
+CONNECTED_INTERVAL_STATUS = "CONNECTED"
 
 
 @dataclass(frozen=True)
@@ -96,41 +97,47 @@ class CoverageStore:
     def load(self, symbol: str) -> dict[str, Any]:
         path = self.path(symbol)
         if not path.exists():
-            return {
-                "store_version": LIQUIDATION_STORE_VERSION,
-                "symbol": symbol,
-                "collector_started_at": None,
-                "last_event_received_at": None,
-                "last_stream_message_at": None,
-                "disconnect_intervals": [],
-                "reconnect_intervals": [],
-                "coverage_status": COVERAGE_UNAVAILABLE,
-            }
-        return json.loads(path.read_text(encoding="utf-8"))
+            return _empty_coverage(symbol)
+        return _normalize_coverage(json.loads(path.read_text(encoding="utf-8")), symbol)
 
     def save(self, symbol: str, coverage: dict[str, Any]) -> None:
         self.path(symbol).write_text(json.dumps(coverage, indent=2, sort_keys=True), encoding="utf-8")
 
     def mark_started(self, symbol: str, timestamp: int) -> dict[str, Any]:
         coverage = self.load(symbol)
+        _close_open_interval(coverage, int(coverage.get("last_transport_alive_at") or timestamp))
         coverage["collector_started_at"] = coverage.get("collector_started_at") or timestamp
-        coverage["last_stream_message_at"] = timestamp
+        coverage["collector_stopped_at"] = None
+        coverage["last_transport_alive_at"] = timestamp
+        coverage.setdefault("coverage_intervals", []).append({"start": timestamp, "end": None, "status": CONNECTED_INTERVAL_STATUS})
         coverage["coverage_status"] = COVERAGE_COMPLETE
+        self.save(symbol, coverage)
+        return coverage
+
+    def mark_transport_alive(self, symbol: str, timestamp: int) -> dict[str, Any]:
+        coverage = self.load(symbol)
+        coverage["last_transport_alive_at"] = timestamp
+        coverage["coverage_status"] = COVERAGE_COMPLETE
+        intervals = coverage.setdefault("coverage_intervals", [])
+        if not intervals or intervals[-1].get("end") is not None:
+            intervals.append({"start": timestamp, "end": None, "status": CONNECTED_INTERVAL_STATUS})
         self.save(symbol, coverage)
         return coverage
 
     def mark_message(self, symbol: str, timestamp: int, event_received: bool = False) -> dict[str, Any]:
         coverage = self.load(symbol)
+        coverage["last_transport_alive_at"] = timestamp
         coverage["last_stream_message_at"] = timestamp
         if event_received:
             coverage["last_event_received_at"] = timestamp
-        if coverage.get("coverage_status") == COVERAGE_UNAVAILABLE:
-            coverage["coverage_status"] = COVERAGE_COMPLETE
+        coverage["coverage_status"] = COVERAGE_COMPLETE
         self.save(symbol, coverage)
         return coverage
 
     def mark_disconnect(self, symbol: str, timestamp: int, reason: str = "DISCONNECT") -> dict[str, Any]:
         coverage = self.load(symbol)
+        _close_open_interval(coverage, timestamp)
+        coverage["last_transport_alive_at"] = coverage.get("last_transport_alive_at") or timestamp
         coverage.setdefault("disconnect_intervals", []).append({"start": timestamp, "end": None, "reason": reason})
         coverage["coverage_status"] = COVERAGE_PARTIAL
         self.save(symbol, coverage)
@@ -142,8 +149,19 @@ class CoverageStore:
         if disconnects and disconnects[-1].get("end") is None:
             disconnects[-1]["end"] = timestamp
         coverage.setdefault("reconnect_intervals", []).append({"timestamp": timestamp})
-        coverage["last_stream_message_at"] = timestamp
+        coverage.setdefault("coverage_intervals", []).append({"start": timestamp, "end": None, "status": CONNECTED_INTERVAL_STATUS})
+        coverage["collector_stopped_at"] = None
+        coverage["last_transport_alive_at"] = timestamp
         coverage["coverage_status"] = COVERAGE_COMPLETE
+        self.save(symbol, coverage)
+        return coverage
+
+    def mark_stopped(self, symbol: str, timestamp: int) -> dict[str, Any]:
+        coverage = self.load(symbol)
+        coverage["collector_stopped_at"] = timestamp
+        _close_open_interval(coverage, timestamp)
+        coverage["last_transport_alive_at"] = coverage.get("last_transport_alive_at") or timestamp
+        coverage["coverage_status"] = COVERAGE_UNAVAILABLE
         self.save(symbol, coverage)
         return coverage
 
@@ -274,11 +292,15 @@ def liquidation_status(root: Path, symbols: tuple[str, ...] = ACTIVE_SYMBOLS) ->
     for symbol in symbols:
         coverage = coverage_store.load(symbol)
         disconnects = coverage.get("disconnect_intervals", [])
+        connected = coverage.get("collector_stopped_at") is None and _has_open_connected_interval(coverage)
         statuses.append(
             {
                 "symbol": symbol,
-                "connected": coverage.get("coverage_status") == COVERAGE_COMPLETE,
+                "connected": connected,
                 "coverage_start": coverage.get("collector_started_at"),
+                "collector_stopped_at": coverage.get("collector_stopped_at"),
+                "coverage_intervals": coverage.get("coverage_intervals", []),
+                "last_transport_alive_at": coverage.get("last_transport_alive_at"),
                 "last_message": coverage.get("last_stream_message_at"),
                 "last_event": coverage.get("last_event_received_at"),
                 "disconnect_count": len(disconnects),
@@ -300,6 +322,10 @@ def collect_liquidations(root: Path, duration_seconds: int = 30, symbols: tuple[
     try:
         for payload in _read_websocket_json(stream_url, duration_seconds):
             received_at = int(time.time())
+            for active_symbol in symbols:
+                coverage.mark_transport_alive(active_symbol, received_at)
+            if payload is None:
+                continue
             stream = str(payload.get("stream", ""))
             data = payload.get("data", payload)
             raw_symbol = str(data.get("o", data).get("s", ""))
@@ -316,7 +342,10 @@ def collect_liquidations(root: Path, duration_seconds: int = 30, symbols: tuple[
         for symbol in symbols:
             coverage.mark_disconnect(symbol, failed_at, exc.__class__.__name__)
         return {"connected": False, "received_event_count": received, "error": exc.__class__.__name__, "status": liquidation_status(root, symbols)}
-    return {"connected": True, "received_event_count": received, "status": liquidation_status(root, symbols)}
+    stopped_at = int(time.time())
+    for symbol in symbols:
+        coverage.mark_stopped(symbol, stopped_at)
+    return {"connected": False, "completed": True, "received_event_count": received, "status": liquidation_status(root, symbols)}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -335,17 +364,21 @@ def main(argv: list[str] | None = None) -> int:
 
 def _window_coverage_status(coverage: dict[str, Any], snapshot_timestamp: int, seconds: int) -> str:
     started = coverage.get("collector_started_at")
-    last_message = coverage.get("last_stream_message_at")
-    if started is None or last_message is None:
+    if started is None:
         return COVERAGE_UNAVAILABLE
-    if int(started) > snapshot_timestamp - seconds or int(last_message) < snapshot_timestamp:
+    lower = snapshot_timestamp - seconds
+    intervals = _connected_intervals(coverage)
+    if not intervals:
+        return COVERAGE_UNAVAILABLE
+    if all(interval["end"] <= lower for interval in intervals):
+        return COVERAGE_UNAVAILABLE
+    if _window_inside_connected_interval(intervals, lower, snapshot_timestamp):
+        return COVERAGE_COMPLETE
+    if any(_interval_overlaps(interval, lower, snapshot_timestamp) for interval in intervals):
         return COVERAGE_PARTIAL
-    for gap in coverage.get("disconnect_intervals", []):
-        gap_start = int(gap.get("start") or 0)
-        gap_end = int(gap.get("end") or snapshot_timestamp)
-        if gap_start < snapshot_timestamp and gap_end > snapshot_timestamp - seconds:
-            return COVERAGE_PARTIAL
-    return COVERAGE_COMPLETE
+    if all(interval["start"] >= snapshot_timestamp for interval in intervals):
+        return COVERAGE_UNAVAILABLE
+    return COVERAGE_UNAVAILABLE
 
 
 def _window_label(seconds: int) -> str:
@@ -363,7 +396,7 @@ def _stream_url(symbols: tuple[str, ...]) -> str:
     return BINANCE_USDM_FORCE_ORDER_STREAM + streams
 
 
-def _read_websocket_json(url: str, duration_seconds: int) -> Iterable[dict[str, Any]]:
+def _read_websocket_json(url: str, duration_seconds: int) -> Iterable[dict[str, Any] | None]:
     # Minimal websocket client for dry-run connectivity without adding deps.
     if not url.startswith("wss://"):
         raise ValueError("only wss websocket URLs are supported")
@@ -391,6 +424,7 @@ def _read_websocket_json(url: str, duration_seconds: int) -> Iterable[dict[str, 
                 try:
                     message = _read_ws_message(sock)
                 except TimeoutError:
+                    yield None
                     continue
                 if message:
                     yield json.loads(message)
@@ -425,6 +459,77 @@ def _recv_exact(sock: ssl.SSLSocket, length: int) -> bytes:
         chunks.append(chunk)
         remaining -= len(chunk)
     return b"".join(chunks)
+
+
+def _empty_coverage(symbol: str) -> dict[str, Any]:
+    return {
+        "store_version": LIQUIDATION_STORE_VERSION,
+        "symbol": symbol,
+        "collector_started_at": None,
+        "collector_stopped_at": None,
+        "last_transport_alive_at": None,
+        "last_event_received_at": None,
+        "last_stream_message_at": None,
+        "coverage_intervals": [],
+        "disconnect_intervals": [],
+        "reconnect_intervals": [],
+        "coverage_status": COVERAGE_UNAVAILABLE,
+    }
+
+
+def _normalize_coverage(coverage: dict[str, Any], symbol: str) -> dict[str, Any]:
+    normalized = _empty_coverage(symbol)
+    normalized.update(coverage)
+    if normalized.get("last_transport_alive_at") is None:
+        normalized["last_transport_alive_at"] = normalized.get("last_stream_message_at")
+    if "coverage_intervals" not in coverage:
+        started = normalized.get("collector_started_at")
+        last_alive = normalized.get("last_transport_alive_at")
+        if started is not None and last_alive is not None:
+            normalized["coverage_intervals"] = [{"start": int(started), "end": int(last_alive), "status": CONNECTED_INTERVAL_STATUS}]
+    return normalized
+
+
+def _close_open_interval(coverage: dict[str, Any], timestamp: int) -> None:
+    intervals = coverage.setdefault("coverage_intervals", [])
+    if intervals and intervals[-1].get("status") == CONNECTED_INTERVAL_STATUS and intervals[-1].get("end") is None:
+        intervals[-1]["end"] = timestamp
+
+
+def _has_open_connected_interval(coverage: dict[str, Any]) -> bool:
+    intervals = coverage.get("coverage_intervals", [])
+    return bool(intervals and intervals[-1].get("status") == CONNECTED_INTERVAL_STATUS and intervals[-1].get("end") is None)
+
+
+def _connected_intervals(coverage: dict[str, Any]) -> list[dict[str, int]]:
+    last_alive = coverage.get("last_transport_alive_at") or coverage.get("last_stream_message_at")
+    intervals = coverage.get("coverage_intervals")
+    if intervals is None:
+        started = coverage.get("collector_started_at")
+        intervals = []
+        if started is not None and last_alive is not None:
+            intervals = [{"start": int(started), "end": int(last_alive), "status": CONNECTED_INTERVAL_STATUS}]
+    result = []
+    for interval in intervals:
+        if interval.get("status") != CONNECTED_INTERVAL_STATUS:
+            continue
+        start = interval.get("start")
+        if start is None:
+            continue
+        end = interval.get("end")
+        if end is None:
+            if last_alive is None:
+                continue
+            end = last_alive
+        result.append({"start": int(start), "end": int(end)})
+    return result
+
+def _window_inside_connected_interval(intervals: list[dict[str, int]], lower: int, upper: int) -> bool:
+    return any(interval["start"] <= lower and interval["end"] >= upper for interval in intervals)
+
+
+def _interval_overlaps(interval: dict[str, int], lower: int, upper: int) -> bool:
+    return interval["start"] < upper and interval["end"] > lower
 
 
 if __name__ == "__main__":
