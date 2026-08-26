@@ -38,6 +38,15 @@ class ReplayHistoryTooOld(RuntimeError):
     """Raised when persisted state is beyond the supported dynamic replay horizon."""
 
 
+class ReplayStateUnavailableForFetch(RuntimeError):
+    """Raised when production replay fetch cannot load a valid review state."""
+
+
+FETCH_MODE_BOOTSTRAP = "bootstrap"
+FETCH_MODE_PRODUCTION_REPLAY = "production-replay"
+FETCH_MODES = {FETCH_MODE_BOOTSTRAP, FETCH_MODE_PRODUCTION_REPLAY}
+
+
 @dataclass(frozen=True)
 class FetchDepthPlan:
     timeframe: str
@@ -92,6 +101,68 @@ def build_fetch_depth_plan(
 
 def fetch_depth_plan_for_state(fetch_timestamp: int, state_path: Path | None = None) -> dict[str, dict[str, FetchDepthPlan]]:
     previous, _ = load_review_state(state_path)
+    return _plans_from_previous(fetch_timestamp, previous)
+
+
+def fetch_depth_plan_for_mode(
+    fetch_timestamp: int,
+    mode: str = FETCH_MODE_BOOTSTRAP,
+    state_path: Path | None = None,
+) -> dict[str, dict[str, FetchDepthPlan]]:
+    if mode not in FETCH_MODES:
+        raise ValueError(f"unknown fetch mode: {mode}")
+    if mode == FETCH_MODE_PRODUCTION_REPLAY:
+        previous, _ = load_required_replay_state(state_path)
+        return _plans_from_previous(fetch_timestamp, previous)
+    previous, _ = load_review_state(state_path)
+    return _plans_from_previous(fetch_timestamp, previous)
+
+
+def load_required_replay_state(state_path: Path | None) -> tuple[dict[str, dict], str]:
+    if state_path is None:
+        raise ReplayStateUnavailableForFetch("REPLAY_STATE_UNAVAILABLE_FOR_FETCH: state path required")
+    if not state_path.exists():
+        raise ReplayStateUnavailableForFetch(f"REPLAY_STATE_UNAVAILABLE_FOR_FETCH: missing state file: {state_path}")
+    try:
+        previous, loaded_from = load_review_state(state_path)
+    except json.JSONDecodeError as exc:
+        raise ReplayStateUnavailableForFetch(f"REPLAY_STATE_UNAVAILABLE_FOR_FETCH: malformed JSON: {state_path}") from exc
+    missing_symbols = []
+    for symbol in ACTIVE_SYMBOLS:
+        try:
+            timestamp = int((previous.get(symbol) or {}).get("previous_review_timestamp") or 0)
+        except (TypeError, ValueError):
+            timestamp = 0
+        if timestamp <= 0:
+            missing_symbols.append(symbol)
+    if missing_symbols:
+        missing = ",".join(missing_symbols)
+        raise ReplayStateUnavailableForFetch(f"REPLAY_STATE_UNAVAILABLE_FOR_FETCH: missing previous_review_timestamp for {missing}")
+    return previous, loaded_from
+
+
+def replay_state_diagnostics(state_path: Path | None) -> dict[str, object]:
+    try:
+        previous, loaded_from = load_required_replay_state(state_path)
+    except ReplayStateUnavailableForFetch as exc:
+        return {
+            "available": False,
+            "state_source": str(state_path) if state_path is not None else None,
+            "loaded_from": None,
+            "error": str(exc),
+        }
+    return {
+        "available": True,
+        "state_source": str(state_path),
+        "loaded_from": loaded_from,
+        "previous_review_timestamp": {
+            symbol: int(previous[symbol]["previous_review_timestamp"])
+            for symbol in ACTIVE_SYMBOLS
+        },
+    }
+
+
+def _plans_from_previous(fetch_timestamp: int, previous: dict[str, dict]) -> dict[str, dict[str, FetchDepthPlan]]:
     plans = {}
     for symbol in ACTIVE_SYMBOLS:
         previous_timestamp = None
@@ -288,9 +359,18 @@ def publish_artifact(snapshot: dict[str, dict[str, dict]], output_dir: Path) -> 
     return path
 
 
-def run_external_fetch(output_dir: Path, fetch_timestamp: int | None = None, state_path: Path | None = None) -> Path:
+def run_external_fetch(
+    output_dir: Path,
+    fetch_timestamp: int | None = None,
+    state_path: Path | None = None,
+    mode: str = FETCH_MODE_BOOTSTRAP,
+) -> Path:
     timestamp = int(time.time()) if fetch_timestamp is None else fetch_timestamp
     effective_state_path = state_path if state_path is not None else Path("reviews/thesis-baseline.json")
-    depth_plans = fetch_depth_plan_for_state(timestamp, effective_state_path if effective_state_path.exists() else None)
+    if mode == FETCH_MODE_PRODUCTION_REPLAY:
+        depth_plans = fetch_depth_plan_for_mode(timestamp, mode, effective_state_path)
+    else:
+        bootstrap_state = effective_state_path if effective_state_path.exists() else None
+        depth_plans = fetch_depth_plan_for_mode(timestamp, mode, bootstrap_state)
     snapshot = fetch_external_generation(default_crypto_providers(), timestamp, depth_plans)
     return publish_artifact(snapshot, output_dir)

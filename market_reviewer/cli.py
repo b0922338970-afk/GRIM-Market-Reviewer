@@ -5,7 +5,13 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from .external import run_external_fetch
+from .external import (
+    FETCH_MODE_BOOTSTRAP,
+    FETCH_MODE_PRODUCTION_REPLAY,
+    ReplayHistoryTooOld,
+    ReplayStateUnavailableForFetch,
+    run_external_fetch,
+)
 from .external_evidence_providers import run_external_evidence_fetch
 from .liquidation_collector import collect_liquidations, liquidation_status
 from .review_only import run_review_only
@@ -19,6 +25,13 @@ def build_parser() -> argparse.ArgumentParser:
     review.add_argument("--thesis", help="Optional previous thesis JSON path")
     fetch = subparsers.add_parser("fetch-external", help="Fetch BTC/ETH market-data.v1 artifact")
     fetch.add_argument("--output-dir", default="artifact", help="Directory for market-data-v1.json")
+    fetch.add_argument("--state", help="Review-state JSON path required for production replay fetch")
+    fetch.add_argument(
+        "--mode",
+        choices=(FETCH_MODE_BOOTSTRAP, FETCH_MODE_PRODUCTION_REPLAY),
+        default=FETCH_MODE_BOOTSTRAP,
+        help="Fetch contract: bootstrap allows no state; production-replay requires replay state and fails closed",
+    )
     evidence = subparsers.add_parser("fetch-external-evidence", help="Fetch research-only external-market-evidence.v1 artifact")
     evidence.add_argument("--output-dir", default="artifact", help="Directory for external-market-evidence-v1.json")
     liquidations = subparsers.add_parser("collect-liquidations", help="Collect research-only liquidation stream events")
@@ -36,7 +49,12 @@ def main(argv: list[str] | None = None) -> int:
         print(run_review_only(args.snapshot, args.thesis))
         return 0
     if args.command == "fetch-external":
-        path = run_external_fetch(Path(args.output_dir))
+        try:
+            state_path = Path(args.state) if args.state else None
+            path = run_external_fetch(Path(args.output_dir), state_path=state_path, mode=args.mode)
+        except (ReplayStateUnavailableForFetch, ReplayHistoryTooOld) as exc:
+            print(str(exc))
+            return 2
         print(path)
         return 0
     if args.command == "fetch-external-evidence":

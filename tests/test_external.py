@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import os
 import tempfile
 import unittest
@@ -9,18 +10,35 @@ os._walk_symlinks_as_files = False
 
 from market_reviewer.external import (
     DEFAULT_BOOTSTRAP_CANDLES,
+    FETCH_MODE_BOOTSTRAP,
+    FETCH_MODE_PRODUCTION_REPLAY,
     FetchDepthPlan,
     ReplayHistoryTooOld,
+    ReplayStateUnavailableForFetch,
     build_fetch_depth_plan,
     build_symbol_generation,
+    fetch_depth_plan_for_mode,
     fetch_external_generation,
     fetch_with_depth_plan,
     has_new_closed_candle,
     latest_closed_index,
+    load_required_replay_state,
     publish_artifact,
 )
 from market_reviewer.model import Candle, DataUnavailable, TIMEFRAMES, TIMEFRAME_SECONDS, to_market_data_frame
 from market_reviewer.providers import choose_complete_provider
+
+
+def write_replay_state(path: Path, btc_timestamp: int | None = 1_700_000_000, eth_timestamp: int | None = 1_700_000_000) -> None:
+    symbols = {}
+    if btc_timestamp is not None:
+        symbols["BTC"] = {"previous_review_timestamp": btc_timestamp}
+    if eth_timestamp is not None:
+        symbols["ETH"] = {"previous_review_timestamp": eth_timestamp}
+    path.write_text(
+        json.dumps({"persistence_version": 2, "state_schema": "review-state.v2", "symbols": symbols}),
+        encoding="utf-8",
+    )
 
 
 class FakeProvider:
@@ -212,6 +230,60 @@ class DynamicFetchDepthTests(unittest.TestCase):
         frames = {"BTC": {tf: to_market_data_frame(frame) for tf, frame in generation["BTC"].items()}}
         report = replay_coverage_report(frames, {"BTC": {"previous_review_timestamp": previous}})
         self.assertEqual(report["REPLAY_COVERAGE_COMPLETE"], "YES")
+
+
+    def test_bootstrap_fetch_mode_allows_missing_state(self) -> None:
+        plans = fetch_depth_plan_for_mode(1_700_200_000, FETCH_MODE_BOOTSTRAP, None)
+        self.assertEqual(plans["BTC"]["M5"].requested_bars, DEFAULT_BOOTSTRAP_CANDLES)
+        self.assertEqual(plans["ETH"]["M5"].replay_required_bars, 0)
+
+    def test_production_replay_requires_state_path(self) -> None:
+        with self.assertRaises(ReplayStateUnavailableForFetch):
+            fetch_depth_plan_for_mode(1_700_200_000, FETCH_MODE_PRODUCTION_REPLAY, None)
+
+    def test_production_replay_fails_closed_for_missing_state_file(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            missing = Path(directory) / "review-state.v2.json"
+            with self.assertRaisesRegex(ReplayStateUnavailableForFetch, "missing state file"):
+                fetch_depth_plan_for_mode(1_700_200_000, FETCH_MODE_PRODUCTION_REPLAY, missing)
+
+    def test_production_replay_fails_closed_for_malformed_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "review-state.v2.json"
+            state.write_text("{", encoding="utf-8")
+            with self.assertRaisesRegex(ReplayStateUnavailableForFetch, "malformed JSON"):
+                load_required_replay_state(state)
+
+    def test_production_replay_requires_all_symbol_review_timestamps(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "review-state.v2.json"
+            write_replay_state(state, btc_timestamp=1_700_000_000, eth_timestamp=None)
+            with self.assertRaisesRegex(ReplayStateUnavailableForFetch, "ETH"):
+                fetch_depth_plan_for_mode(1_700_200_000, FETCH_MODE_PRODUCTION_REPLAY, state)
+
+    def test_production_replay_uses_dynamic_depth_from_state(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "review-state.v2.json"
+            write_replay_state(state, btc_timestamp=1_700_000_000, eth_timestamp=1_700_000_000)
+            plans = fetch_depth_plan_for_mode(1_700_200_000, FETCH_MODE_PRODUCTION_REPLAY, state)
+            self.assertGreater(plans["BTC"]["M5"].replay_required_bars, 0)
+            self.assertGreaterEqual(plans["BTC"]["M5"].requested_bars, DEFAULT_BOOTSTRAP_CANDLES)
+
+    def test_observation44_expected_m5_depth_exceeds_bootstrap(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "review-state.v2.json"
+            write_replay_state(state, btc_timestamp=1_787_622_000, eth_timestamp=1_787_622_000)
+            plans = fetch_depth_plan_for_mode(1_787_720_674, FETCH_MODE_PRODUCTION_REPLAY, state)
+            self.assertEqual(plans["BTC"]["M5"].replay_required_bars, 327)
+            self.assertEqual(plans["BTC"]["M5"].requested_bars, 387)
+            self.assertEqual(plans["BTC"]["M5"].coverage_start_timestamp, 1_787_607_300)
+
+    def test_production_replay_preserves_history_too_old_guard(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "review-state.v2.json"
+            write_replay_state(state, btc_timestamp=1_700_000_000, eth_timestamp=1_700_000_000)
+            with self.assertRaises(ReplayHistoryTooOld):
+                fetch_depth_plan_for_mode(1_700_000_000 + 15 * 86_400, FETCH_MODE_PRODUCTION_REPLAY, state)
 
     def test_production_untouched_if_dynamic_fetch_fails(self) -> None:
         before = {"BTC": "state"}

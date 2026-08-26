@@ -2,6 +2,18 @@ name: External BTC ETH market data
 
 on:
   workflow_dispatch:
+    inputs:
+      replay_state_run_id:
+        description: GitHub Actions run id containing the accepted production review-state.v2 artifact
+        required: true
+      replay_state_artifact_name:
+        description: Artifact name containing review-state.v2.json
+        required: true
+        default: production-review-state-v2
+
+permissions:
+  actions: read
+  contents: read
 
 jobs:
   external-market-data:
@@ -16,8 +28,30 @@ jobs:
           python -m compileall -q market_reviewer tests
           python -m market_reviewer.cli --help
 
+      - name: Download accepted production replay state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPLAY_STATE_RUN_ID: ${{ inputs.replay_state_run_id }}
+          REPLAY_STATE_ARTIFACT_NAME: ${{ inputs.replay_state_artifact_name }}
+        run: |
+          mkdir -p artifact/replay-state
+          gh run download "$REPLAY_STATE_RUN_ID" --name "$REPLAY_STATE_ARTIFACT_NAME" --dir artifact/replay-state
+          test -f artifact/replay-state/review-state.v2.json
+
+      - name: Validate replay state for production fetch
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          from market_reviewer.external import replay_state_diagnostics, load_required_replay_state
+
+          state_path = Path("artifact/replay-state/review-state.v2.json")
+          diagnostics = replay_state_diagnostics(state_path)
+          print(diagnostics)
+          load_required_replay_state(state_path)
+          PY
+
       - name: Fetch external market data
-        run: python -m market_reviewer.cli fetch-external --output-dir artifact
+        run: python -m market_reviewer.cli fetch-external --mode production-replay --state artifact/replay-state/review-state.v2.json --output-dir artifact
 
       - name: Upload market-data.v1 artifact
         uses: actions/upload-artifact@v4
