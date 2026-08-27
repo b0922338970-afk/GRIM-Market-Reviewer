@@ -377,5 +377,39 @@ class MissedOpportunityLiveV426aTests(unittest.TestCase):
         self.assertEqual(ev["POSITIONING"], "POSITIVE")
 
 
+    def test_deteriorating_different_core_context_starts_new_tracker(self) -> None:
+        store = backfill_46_49("fixed")
+        old_btc = next(r for r in store["records"] if r["symbol"] == "BTC")
+        old_id = old_btc["tracker_id"]
+        opp = opportunity("BTC")
+        opp["sequence_id"] = "BTC-seq-0011"
+        opp["features"]["REGIME"]["value"]["regime"] = "NEW_DELIVERY_LEG"
+        review = terminal_review("BTC")
+        review["Sequence_ID"] = "BTC-seq-0011"
+        updated, report = dry_run_missed_opportunity_observation(store=store, reviews={"BTC": review}, frames={"BTC": frames("BTC", price=80500)}, opportunity_snapshots={"BTC": opp}, external_evidence={"BTC": external("BTC")}, observation_number=50)
+        btc_records = [r for r in updated["records"] if r["symbol"] == "BTC"]
+        self.assertEqual(len(btc_records), 2)
+        self.assertEqual(btc_records[0]["tracker_id"], old_id)
+        self.assertEqual(len(btc_records[0]["snapshots"]), 4)
+        self.assertEqual(btc_records[1]["origin_observation"], 50)
+        self.assertEqual(btc_records[1]["production_sequence_id_at_origin"], "BTC-seq-0011")
+        self.assertEqual(report["symbols"]["BTC"]["tracker_id"], btc_records[1]["tracker_id"])
+
+    def test_active_tracker_does_not_split_on_core_context_change(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "research" / "missed-opportunities.json"
+            apply_once(path)
+            original_id = load_tracker_store(path)["records"][0]["tracker_id"]
+            opp = opportunity("BTC")
+            opp["sequence_id"] = "BTC-seq-0011"
+            opp["features"]["REGIME"]["value"]["regime"] = "NEW_DELIVERY_LEG"
+            review = terminal_review("BTC")
+            review["Sequence_ID"] = "BTC-seq-0011"
+            apply_missed_opportunity_observation(reviews={"BTC": review}, frames={"BTC": frames("BTC", price=101)}, opportunity_snapshots={"BTC": opp}, external_evidence={"BTC": external("BTC")}, observation_number=51, store_path=path, persist=True)
+            store = load_tracker_store(path)
+            self.assertEqual(len(store["records"]), 1)
+            self.assertEqual(store["records"][0]["tracker_id"], original_id)
+            self.assertEqual(len(store["records"][0]["snapshots"]), 2)
+
 if __name__ == "__main__":
     unittest.main()

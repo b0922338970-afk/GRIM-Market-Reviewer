@@ -17,7 +17,9 @@ from .missed_opportunity import (
     append_snapshot,
     backfill_46_49,
     build_origin_candidate,
+    create_tracker,
     empty_store,
+    is_eligible_origin,
     load_tracker_store,
     persist_tracker_store,
     record_production_conversion,
@@ -335,7 +337,9 @@ def _apply_symbol_observation(
             conversion = True
     before_record = _matching_record(store, symbol)
     before_snapshot_count = len(before_record.get("snapshots", [])) if before_record else 0
-    if before_record and before_record.get("status") in {"ACTIVE", "DETERIORATING"}:
+    if before_record and _starts_new_research_trajectory(before_record, candidate):
+        store.setdefault("records", []).append(create_tracker(candidate, created_at=None))
+    elif before_record and before_record.get("status") in {"ACTIVE", "DETERIORATING"}:
         append_snapshot(before_record, candidate, updated_at=None)
     else:
         upsert_tracker(store, candidate, updated_at=None)
@@ -370,6 +374,27 @@ def _matching_record(store: dict[str, Any], symbol: str, tracker_id: Any | None 
     active = [record for record in records if record.get("status") in {"ACTIVE", "DETERIORATING", "CONVERTED"}]
     return active[-1] if active else records[-1]
 
+
+def _starts_new_research_trajectory(record: dict[str, Any], candidate: dict[str, Any]) -> bool:
+    if record.get("status") != "DETERIORATING":
+        return False
+    if not is_eligible_origin(candidate):
+        return False
+    if candidate.get("new_legal_genesis_active") is True:
+        return False
+    same_sequence = str(record.get("production_sequence_id_at_origin") or "") == str(candidate.get("production_sequence_id") or "")
+    if same_sequence:
+        return False
+    return _trajectory_context_key(record.get("context_signature") or {}) != _trajectory_context_key(candidate.get("context_signature") or {})
+
+
+def _trajectory_context_key(context: dict[str, Any]) -> tuple[Any, ...]:
+    return (
+        context.get("trend_regime"),
+        context.get("swing_bias"),
+        context.get("structure_class"),
+        context.get("momentum_class"),
+    )
 
 def _new_legal_genesis_in_review(review: dict[str, Any]) -> bool:
     return _new_legal_genesis_timestamp(review) is not None
