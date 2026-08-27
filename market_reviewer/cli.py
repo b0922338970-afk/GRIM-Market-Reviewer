@@ -14,6 +14,7 @@ from .external import (
 )
 from .external_evidence_providers import run_external_evidence_fetch
 from .liquidation_collector import collect_liquidations, liquidation_status
+from .missed_opportunity_live import explicit_backfill_v426, missed_opportunity_status
 from .review_only import run_review_only
 
 
@@ -39,6 +40,10 @@ def build_parser() -> argparse.ArgumentParser:
     liquidations.add_argument("--duration", type=int, default=None, help="Optional bounded collection duration in seconds")
     liq_status = subparsers.add_parser("liquidation-status", help="Show research-only liquidation collector status")
     liq_status.add_argument("--root", default="artifact/liquidations", help="Directory for liquidation event store")
+    mot_backfill = subparsers.add_parser("backfill-missed-opportunities-v426", help="Explicitly seed validated #46-#49 missed-opportunity trackers")
+    mot_backfill.add_argument("--path", default="research/missed-opportunities.json", help="Research tracker store path")
+    mot_status = subparsers.add_parser("missed-opportunity-status", help="Show research-only missed opportunity tracker status")
+    mot_status.add_argument("--path", default="research/missed-opportunities.json", help="Research tracker store path")
     return parser
 
 
@@ -68,6 +73,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "liquidation-status":
         import json
         print(json.dumps(liquidation_status(Path(args.root)), indent=2, sort_keys=True))
+        return 0
+    if args.command == "backfill-missed-opportunities-v426":
+        import json
+        print(json.dumps(explicit_backfill_v426(Path(args.path)), indent=2, sort_keys=True))
+        return 0
+    if args.command == "missed-opportunity-status":
+        import json
+        print(json.dumps(missed_opportunity_status(Path(args.path)), indent=2, sort_keys=True))
         return 0
     parser.print_help()
     return 0
