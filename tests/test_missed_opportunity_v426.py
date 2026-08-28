@@ -249,11 +249,13 @@ class MissedOpportunityTrackerV426Tests(unittest.TestCase):
         result = calculate_horizon(direction="LONG", origin_timestamp=1_000, origin_price=100, frame=frame(continuous_candles(1_300, 288), latest_closed=87_400), horizon="24H")
         self.assertEqual(result["horizon_status"], "COMPLETE")
 
-    def test_update_horizons_marks_outcome_complete(self) -> None:
+    def test_update_horizons_preserves_tracker_lifecycle(self) -> None:
         record = create_tracker(candidate(timestamp=1_000, price=100), created_at="fixed")
         update_horizon_outcomes(record, frame(continuous_candles(1_300, 288), latest_closed=87_400))
-        self.assertEqual(record["status"], "OUTCOME_COMPLETE")
-        self.assertEqual(record["terminal_reason"], "MAX_HORIZON_COMPLETE")
+        self.assertEqual(record["status"], "ACTIVE")
+        self.assertEqual(record["episode_status"], "OPEN")
+        self.assertIsNone(record["terminal_reason"])
+        self.assertTrue(all(record["outcomes"][h]["horizon_status"] == "COMPLETE" for h in ("1H", "4H", "12H", "24H")))
 
     def test_production_conversion_recorded_without_failure(self) -> None:
         record = create_tracker(candidate(timestamp=1_000, price=100), created_at="fixed")
@@ -370,6 +372,18 @@ class MissedOpportunityTrackerV426Tests(unittest.TestCase):
         update_horizon_outcomes(record, data)
         self.assertEqual(record["outcomes"], first)
 
+    def test_recovery_idempotent_preserves_lifecycle_metadata(self) -> None:
+        record = create_tracker(candidate(timestamp=1_000, price=100), created_at="fixed")
+        record["status"] = "DETERIORATING"
+        record["episode_status"] = "OPEN"
+        record["terminal_reason"] = None
+        data = frame(continuous_candles(1_300, 288), latest_closed=87_400)
+        update_horizon_outcomes(record, data)
+        first_metadata = {key: record.get(key) for key in ("status", "episode_status", "terminal_reason", "converted_to_production")}
+        update_horizon_outcomes(record, data)
+        self.assertEqual({key: record.get(key) for key in first_metadata}, first_metadata)
+
+
     def test_restart_reload_recovered_outcomes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             path = Path(tmp) / "research" / "missed-opportunities.json"
@@ -380,6 +394,23 @@ class MissedOpportunityTrackerV426Tests(unittest.TestCase):
             persist_tracker_store(path, store)
             loaded = load_tracker_store(path)
             self.assertEqual(loaded["records"][0]["outcomes"], record["outcomes"])
+
+    def test_restart_reload_recovered_outcomes_preserves_open_episode(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "research" / "missed-opportunities.json"
+            store = empty_store("fixed")
+            record = create_tracker(candidate(timestamp=1_000, price=100), created_at="fixed")
+            record["status"] = "DETERIORATING"
+            record["episode_status"] = "OPEN"
+            update_horizon_outcomes(record, frame(continuous_candles(1_300, 288), latest_closed=87_400))
+            store["records"].append(record)
+            persist_tracker_store(path, store)
+            loaded = load_tracker_store(path)["records"][0]
+            self.assertEqual(loaded["status"], "DETERIORATING")
+            self.assertEqual(loaded["episode_status"], "OPEN")
+            self.assertIsNone(loaded["terminal_reason"])
+            self.assertTrue(all(loaded["outcomes"][h]["horizon_status"] == "COMPLETE" for h in ("1H", "4H", "12H", "24H")))
+
 
 
 if __name__ == "__main__":

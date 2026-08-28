@@ -267,10 +267,6 @@ def update_horizon_outcomes(record: dict[str, Any], frame: MarketDataFrame, hori
             frame=frame,
             horizon=horizon,
         )
-    if all(record["outcomes"][h]["horizon_status"] == "COMPLETE" for h in ("1H", "4H", "12H", "24H")):
-        record["status"] = "OUTCOME_COMPLETE"
-        record["terminal_reason"] = "MAX_HORIZON_COMPLETE"
-        record["episode_status"] = "CLOSED"
     return record
 
 
