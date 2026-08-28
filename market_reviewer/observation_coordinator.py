@@ -76,14 +76,15 @@ def prepare_observation(
     external_snapshot = _read_json(external_path)
     external_freeze = _external_freeze(external_snapshot, symbols)
     required_external_time = external_freeze["required_external_time"]
-    target_checkpoint = _first_m5_checkpoint_at_or_after(required_external_time)
 
-    selected = _select_market_checkpoint(market_snapshot, target_checkpoint, symbols)
+    selected = _select_market_checkpoint(market_snapshot, required_external_time, symbols, previous_state)
+    first_initial_checkpoint = selected.get("initial_checkpoint")
     if selected["status"] != READY:
         market_fetch_count += 1
         market_path = market_fetch(output_dir)
         market_snapshot = _read_json(market_path)
-        selected = _select_market_checkpoint(market_snapshot, target_checkpoint, symbols)
+        selected = _select_market_checkpoint(market_snapshot, required_external_time, symbols, previous_state)
+        selected["initial_checkpoint"] = first_initial_checkpoint
 
     if selected["status"] != READY:
         return _result(
@@ -196,6 +197,7 @@ def _result(
         "reason": reason,
         "final": status,
         "canonical_checkpoint": selected.get("canonical_checkpoint"),
+        "initial_checkpoint": selected.get("initial_checkpoint"),
         "latest_m5_open": selected.get("latest_m5_open"),
         "required_external_time": external_freeze["required_external_time"],
         "next_required_m5_open": selected.get("next_required_m5_open"),
@@ -232,23 +234,37 @@ def _result(
     }
 
 
-def _select_market_checkpoint(snapshot: dict[str, Any], target_checkpoint: int, symbols: tuple[str, ...]) -> dict[str, Any]:
+def _select_market_checkpoint(
+    snapshot: dict[str, Any],
+    required_external_time: int,
+    symbols: tuple[str, ...],
+    previous_state: dict[str, dict] | None = None,
+) -> dict[str, Any]:
     latest_by_symbol = {symbol: _latest_m5_open(snapshot, symbol) for symbol in symbols}
     missing = [symbol for symbol, timestamp in latest_by_symbol.items() if timestamp is None]
     if missing:
+        target_checkpoint = _first_m5_checkpoint_at_or_after(required_external_time)
         return {
             "status": BLOCKED,
             "reason": "MISSING_M5_MARKET_DATA",
+            "initial_checkpoint": None,
             "latest_m5_open": latest_by_symbol,
             "next_required_m5_open": target_checkpoint - 300,
             "next_required_checkpoint": target_checkpoint,
         }
+    initial_checkpoint = min(int(timestamp or 0) for timestamp in latest_by_symbol.values()) + 300
+    if required_external_time <= initial_checkpoint:
+        target_checkpoint = initial_checkpoint
+    else:
+        target_checkpoint = _first_m5_checkpoint_at_or_after(required_external_time)
+    target_checkpoint = max(target_checkpoint, _previous_min_next_checkpoint(previous_state or {}, symbols))
     target_open = target_checkpoint - 300
     if all(_has_closed_m5_open(snapshot, symbol, target_open) for symbol in symbols):
         return {
             "status": READY,
             "reason": None,
             "canonical_checkpoint": target_checkpoint,
+            "initial_checkpoint": initial_checkpoint,
             "latest_m5_open": latest_by_symbol,
             "next_required_m5_open": target_open,
             "next_required_checkpoint": target_checkpoint,
@@ -258,6 +274,7 @@ def _select_market_checkpoint(snapshot: dict[str, Any], target_checkpoint: int, 
             "status": WAITING_FOR_M5_CLOSE,
             "reason": WAITING_FOR_M5_CLOSE,
             "canonical_checkpoint": None,
+            "initial_checkpoint": initial_checkpoint,
             "latest_m5_open": latest_by_symbol,
             "next_required_m5_open": target_open,
             "next_required_checkpoint": target_checkpoint,
@@ -266,10 +283,22 @@ def _select_market_checkpoint(snapshot: dict[str, Any], target_checkpoint: int, 
         "status": BLOCKED,
         "reason": MARKET_CHECKPOINT_GAP,
         "canonical_checkpoint": None,
+        "initial_checkpoint": initial_checkpoint,
         "latest_m5_open": latest_by_symbol,
         "next_required_m5_open": target_open,
         "next_required_checkpoint": target_checkpoint,
     }
+
+
+def _previous_min_next_checkpoint(previous_state: dict[str, dict], symbols: tuple[str, ...]) -> int:
+    previous_opens = [
+        _optional_int((previous_state.get(symbol) or {}).get("previous_review_timestamp"))
+        for symbol in symbols
+    ]
+    previous_opens = [timestamp for timestamp in previous_opens if timestamp is not None]
+    if not previous_opens:
+        return 0
+    return max(previous_opens) + 600
 
 
 def _external_freeze(snapshot: dict[str, Any], symbols: tuple[str, ...]) -> dict[str, Any]:

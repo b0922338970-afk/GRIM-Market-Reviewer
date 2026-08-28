@@ -134,13 +134,13 @@ class Fetcher:
 
 
 class ObservationCoordinatorV427Tests(unittest.TestCase):
-    def run_prepare(self, market_artifacts: list[dict], external_time: int, liquidity_end: int | None = None, complete_outcomes: bool = True) -> tuple[dict, Fetcher, Fetcher, Path, Path]:
+    def run_prepare(self, market_artifacts: list[dict], external_time: int, liquidity_end: int | None = None, complete_outcomes: bool = True, state_timestamp: int = 1_787_934_000) -> tuple[dict, Fetcher, Fetcher, Path, Path]:
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         root = Path(directory.name)
         state = root / "reviews" / "thesis-baseline.json"
         research = root / "research" / "missed-opportunities.json"
-        write_state(state)
+        write_state(state, state_timestamp)
         store = backfill_46_49("fixed")
         if complete_outcomes:
             for record in store["records"]:
@@ -227,6 +227,32 @@ class ObservationCoordinatorV427Tests(unittest.TestCase):
         result, _, _, _, _ = self.run_prepare([market_snapshot(1_787_941_200)], 1_787_940_845)
         self.assertEqual(result["status"], READY)
         self.assertEqual(result["market_refresh_count"], 0)
+
+
+    def test_general_checkpoint_never_moves_backward(self) -> None:
+        result, _, _, _, _ = self.run_prepare([market_snapshot(1_787_941_200)], 1_787_940_845)
+        self.assertEqual(result["status"], READY)
+        self.assertGreaterEqual(result["canonical_checkpoint"], result["initial_checkpoint"])
+        self.assertGreaterEqual(result["next_required_checkpoint"], result["initial_checkpoint"])
+
+    def test_previous_production_lower_bound_respected(self) -> None:
+        previous_open = 1_787_934_900
+        result, _, _, _, _ = self.run_prepare(
+            [market_snapshot(1_787_935_200)],
+            1_787_934_845,
+            state_timestamp=previous_open,
+        )
+        self.assertEqual(result["status"], READY)
+        self.assertEqual(result["canonical_checkpoint"], 1_787_935_500)
+        self.assertGreater(result["canonical_checkpoint"] - 300, previous_open)
+
+    def test_waiting_target_never_moves_backward(self) -> None:
+        result, _, _, _, _ = self.run_prepare(
+            [market_snapshot(1_787_934_600), market_snapshot(1_787_934_600)],
+            1_787_935_044,
+        )
+        self.assertEqual(result["status"], WAITING_FOR_M5_CLOSE)
+        self.assertGreaterEqual(result["next_required_checkpoint"], result["initial_checkpoint"])
 
     def test_liquidation_coverage_checked_after_checkpoint_freeze(self) -> None:
         result, _, _, _, _ = self.run_prepare([market_snapshot(1_787_934_900)], 1_787_935_044, liquidity_end=1_787_935_200)
