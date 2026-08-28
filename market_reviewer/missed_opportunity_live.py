@@ -315,7 +315,6 @@ def _apply_symbol_observation(
     observation_number: int,
     preexisting_store: dict[str, Any],
 ) -> dict[str, Any]:
-    before = _matching_record(preexisting_store, symbol)
     candidate = build_tracker_candidate_from_observation(
         symbol=symbol,
         review=review,
@@ -324,9 +323,11 @@ def _apply_symbol_observation(
         external_evidence=external_evidence,
         observation_number=observation_number,
     )
+    direction = str(candidate.get("direction") or _direction_from_review(review))
+    before = _matching_record(preexisting_store, symbol, direction=direction, open_only=True)
     conversion = False
-    if before and _new_legal_genesis_in_review(review) and _direction_from_review(review) == before.get("direction"):
-        current = _matching_record(store, symbol, before.get("tracker_id"))
+    if before and _new_legal_genesis_in_review(review):
+        current = _matching_record(store, symbol, before.get("tracker_id"), direction=direction)
         if current and not current.get("converted_to_production"):
             record_production_conversion(
                 current,
@@ -335,21 +336,27 @@ def _apply_symbol_observation(
                 float(candidate["price"]),
             )
             conversion = True
-    before_record = _matching_record(store, symbol)
+    before_record = _matching_record(store, symbol, direction=direction, open_only=True)
     before_snapshot_count = len(before_record.get("snapshots", [])) if before_record else 0
-    if before_record and _starts_new_research_trajectory(before_record, candidate):
-        store.setdefault("records", []).append(create_tracker(candidate, created_at=None))
-    elif before_record and before_record.get("status") in {"ACTIVE", "DETERIORATING"}:
-        append_snapshot(before_record, candidate, updated_at=None)
-    else:
-        upsert_tracker(store, candidate, updated_at=None)
-    after_record = _matching_record(store, symbol)
+    if not conversion:
+        if before_record:
+            if is_eligible_origin(candidate):
+                append_snapshot(before_record, candidate, updated_at=None)
+            else:
+                append_snapshot(before_record, candidate, updated_at=None)
+                _mark_context_break(before_record, candidate)
+        elif is_eligible_origin(candidate):
+            upsert_tracker(store, candidate, updated_at=None)
+    after_record = _matching_record(store, symbol, direction=direction)
     after_snapshot_count = len(after_record.get("snapshots", [])) if after_record else 0
     latest = after_record.get("snapshots", [])[-1] if after_record and after_record.get("snapshots") else None
     return {
-        "tracker_active": "YES" if after_record and after_record.get("status") in {"ACTIVE", "DETERIORATING", "CONVERTED"} else "NO",
+        "tracker_active": "YES" if after_record and after_record.get("episode_status", "OPEN") == "OPEN" and after_record.get("status") in {"ACTIVE", "DETERIORATING"} else "NO",
         "tracker_id": after_record.get("tracker_id") if after_record else None,
         "tracker_status": after_record.get("status") if after_record else None,
+        "episode_status": after_record.get("episode_status") if after_record else None,
+        "context_break_observation": after_record.get("context_break_observation") if after_record else None,
+        "context_break_reason": after_record.get("context_break_reason") if after_record else None,
         "origin_observation": after_record.get("origin_observation") if after_record else None,
         "origin_timestamp": after_record.get("origin_snapshot_timestamp") if after_record else None,
         "origin_price": after_record.get("origin_price") if after_record else None,
@@ -361,40 +368,63 @@ def _apply_symbol_observation(
         "MFE_MAE": after_record.get("outcomes") if after_record else None,
         "production_conversion": "YES" if conversion else "NO",
         "relation_features": latest.get("relation_features") if latest else [],
-        "eligible_origin": candidate.get("new_legal_genesis_active") is False,
+        "eligible_origin": is_eligible_origin(candidate),
     }
 
 
-def _matching_record(store: dict[str, Any], symbol: str, tracker_id: Any | None = None) -> dict[str, Any] | None:
+def _matching_record(
+    store: dict[str, Any],
+    symbol: str,
+    tracker_id: Any | None = None,
+    *,
+    direction: str | None = None,
+    open_only: bool = False,
+) -> dict[str, Any] | None:
     records = [record for record in store.get("records", []) if record.get("symbol") == symbol]
+    if direction is not None:
+        records = [record for record in records if record.get("direction") == direction]
     if tracker_id is not None:
         records = [record for record in records if record.get("tracker_id") == tracker_id]
+    if open_only:
+        records = [record for record in records if _episode_status(record) == "OPEN" and record.get("status") in {"ACTIVE", "DETERIORATING"}]
     if not records:
         return None
-    active = [record for record in records if record.get("status") in {"ACTIVE", "DETERIORATING", "CONVERTED"}]
+    active = [record for record in records if _episode_status(record) == "OPEN" and record.get("status") in {"ACTIVE", "DETERIORATING"}]
     return active[-1] if active else records[-1]
 
 
-def _starts_new_research_trajectory(record: dict[str, Any], candidate: dict[str, Any]) -> bool:
-    if record.get("status") != "DETERIORATING":
-        return False
-    if not is_eligible_origin(candidate):
-        return False
+def _episode_status(record: dict[str, Any]) -> str:
+    status = record.get("episode_status")
+    if status in {"OPEN", "BROKEN", "CLOSED"}:
+        return str(status)
+    return "CLOSED" if record.get("status") in {"CONVERTED", "TERMINAL", "OUTCOME_COMPLETE"} else "OPEN"
+
+
+def _mark_context_break(record: dict[str, Any], candidate: dict[str, Any]) -> None:
+    if _episode_status(record) != "OPEN":
+        return
+    reasons = _eligibility_loss_reasons(candidate)
+    record["episode_status"] = "BROKEN"
+    record["context_break_observation"] = candidate.get("observation_number")
+    record["context_break_timestamp"] = candidate.get("snapshot_timestamp")
+    record["context_break_reasons"] = reasons
+    record["context_break_reason"] = "+".join(reasons)
+
+
+def _eligibility_loss_reasons(candidate: dict[str, Any]) -> list[str]:
+    evidence = candidate.get("opportunity_evidence") or {}
+    reasons: list[str] = []
+    if evidence.get("STRUCTURE") != "POSITIVE":
+        reasons.append("STRUCTURE_LOST")
+    if evidence.get("MOMENTUM") != "POSITIVE":
+        reasons.append("MOMENTUM_LOST")
+    if evidence.get("POSITIONING") != "POSITIVE" and evidence.get("LIQUIDITY") != "POSITIVE":
+        reasons.append("CORE_ELIGIBILITY_LOST")
     if candidate.get("new_legal_genesis_active") is True:
-        return False
-    same_sequence = str(record.get("production_sequence_id_at_origin") or "") == str(candidate.get("production_sequence_id") or "")
-    if same_sequence:
-        return False
-    return _trajectory_context_key(record.get("context_signature") or {}) != _trajectory_context_key(candidate.get("context_signature") or {})
-
-
-def _trajectory_context_key(context: dict[str, Any]) -> tuple[Any, ...]:
-    return (
-        context.get("trend_regime"),
-        context.get("swing_bias"),
-        context.get("structure_class"),
-        context.get("momentum_class"),
-    )
+        reasons.append("PRODUCTION_GENESIS_ACTIVE")
+    if candidate.get("opportunity_status") != "NO_ACTIVE_OPPORTUNITY" and candidate.get("production_sequence_state") not in {"EXPIRED_NO_TRIGGER", "INVALIDATED"}:
+        reasons.append("PRODUCTION_CONTEXT_ACTIVE")
+    return reasons or ["CORE_ELIGIBILITY_LOST"]
 
 def _new_legal_genesis_in_review(review: dict[str, Any]) -> bool:
     return _new_legal_genesis_timestamp(review) is not None

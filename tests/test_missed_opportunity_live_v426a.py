@@ -377,22 +377,24 @@ class MissedOpportunityLiveV426aTests(unittest.TestCase):
         self.assertEqual(ev["POSITIONING"], "POSITIVE")
 
 
-    def test_deteriorating_different_core_context_starts_new_tracker(self) -> None:
-        store = backfill_46_49("fixed")
-        old_btc = next(r for r in store["records"] if r["symbol"] == "BTC")
-        old_id = old_btc["tracker_id"]
-        opp = opportunity("BTC")
-        opp["sequence_id"] = "BTC-seq-0011"
-        opp["features"]["REGIME"]["value"]["regime"] = "NEW_DELIVERY_LEG"
-        review = terminal_review("BTC")
-        review["Sequence_ID"] = "BTC-seq-0011"
-        updated, report = dry_run_missed_opportunity_observation(store=store, reviews={"BTC": review}, frames={"BTC": frames("BTC", price=80500)}, opportunity_snapshots={"BTC": opp}, external_evidence={"BTC": external("BTC")}, observation_number=50)
-        btc_records = [r for r in updated["records"] if r["symbol"] == "BTC"]
+    def test_reentry_after_explicit_break_starts_new_tracker(self) -> None:
+        store = empty_store("fixed")
+        good70 = opportunity("BTC")
+        good70["snapshot_timestamp"] = SNAPSHOT_TS + 70
+        store, _ = dry_run_missed_opportunity_observation(store=store, reviews={"BTC": terminal_review("BTC")}, frames={"BTC": frames("BTC", price=100)}, opportunity_snapshots={"BTC": good70}, external_evidence={"BTC": external("BTC", SNAPSHOT_TS + 70)}, observation_number=70)
+        bad = opportunity("BTC", htf=0, momentum="MATURE_CONTINUATION")
+        bad["snapshot_timestamp"] = SNAPSHOT_TS + 72
+        store, _ = dry_run_missed_opportunity_observation(store=store, reviews={"BTC": terminal_review("BTC")}, frames={"BTC": frames("BTC", price=101)}, opportunity_snapshots={"BTC": bad}, external_evidence={"BTC": external("BTC", SNAPSHOT_TS + 72)}, observation_number=72)
+        good74 = opportunity("BTC")
+        good74["snapshot_timestamp"] = SNAPSHOT_TS + 74
+        store, report = dry_run_missed_opportunity_observation(store=store, reviews={"BTC": terminal_review("BTC")}, frames={"BTC": frames("BTC", price=102)}, opportunity_snapshots={"BTC": good74}, external_evidence={"BTC": external("BTC", SNAPSHOT_TS + 74)}, observation_number=74)
+        btc_records = [r for r in store["records"] if r["symbol"] == "BTC"]
         self.assertEqual(len(btc_records), 2)
-        self.assertEqual(btc_records[0]["tracker_id"], old_id)
-        self.assertEqual(len(btc_records[0]["snapshots"]), 4)
-        self.assertEqual(btc_records[1]["origin_observation"], 50)
-        self.assertEqual(btc_records[1]["production_sequence_id_at_origin"], "BTC-seq-0011")
+        self.assertNotEqual(btc_records[0]["tracker_id"], btc_records[1]["tracker_id"])
+        self.assertEqual([s["observation_number"] for s in btc_records[0]["snapshots"]], [70, 72])
+        self.assertEqual(btc_records[0]["episode_status"], "BROKEN")
+        self.assertEqual(btc_records[0]["context_break_observation"], 72)
+        self.assertEqual(btc_records[1]["origin_observation"], 74)
         self.assertEqual(report["symbols"]["BTC"]["tracker_id"], btc_records[1]["tracker_id"])
 
     def test_active_tracker_does_not_split_on_core_context_change(self) -> None:

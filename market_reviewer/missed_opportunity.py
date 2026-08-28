@@ -22,6 +22,7 @@ from .persistence import atomic_write_json
 TRACKER_SCHEMA = "missed-opportunity-tracker.v1"
 DEFAULT_TRACKER_PATH = Path("research/missed-opportunities.json")
 TRACKER_STATUSES = {"ACTIVE", "DETERIORATING", "CONVERTED", "TERMINAL", "OUTCOME_COMPLETE"}
+EPISODE_STATUSES = {"OPEN", "BROKEN", "CLOSED"}
 TRAJECTORY_STATES = {"IMPROVING", "STABLE", "DETERIORATING"}
 HORIZON_SECONDS = {
     "1H": 3_600,
@@ -55,7 +56,7 @@ def load_tracker_store(path: Path = DEFAULT_TRACKER_PATH) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     if data.get("schema") != TRACKER_SCHEMA or not isinstance(data.get("records"), list):
         raise ValueError("unsupported missed opportunity tracker schema")
-    return data
+    return _with_episode_defaults(data)
 
 
 def persist_tracker_store(path: Path, store: dict[str, Any]) -> None:
@@ -164,6 +165,11 @@ def create_tracker(origin: dict[str, Any], created_at: str | None = None) -> dic
         "snapshots": [snapshot],
         "outcomes": _empty_outcomes(origin["snapshot_timestamp"]),
         "terminal_reason": None,
+        "episode_status": "OPEN",
+        "context_break_observation": None,
+        "context_break_timestamp": None,
+        "context_break_reason": None,
+        "context_break_reasons": [],
         "converted_to_production": False,
         "production_sequence_id": None,
         "conversion_timestamp": None,
@@ -178,7 +184,7 @@ def upsert_tracker(store: dict[str, Any], candidate: dict[str, Any], updated_at:
     if store.get("schema") != TRACKER_SCHEMA:
         raise ValueError("unsupported missed opportunity tracker schema")
     tracker_id = deterministic_tracker_id(candidate["symbol"], candidate["direction"], candidate["snapshot_timestamp"], candidate["context_signature"])
-    existing = next((record for record in store["records"] if record.get("tracker_id") == tracker_id), None)
+    existing = next((record for record in store["records"] if record.get("tracker_id") == tracker_id and _episode_status(record) == "OPEN"), None)
     if existing is None:
         candidate_context_hash = context_hash(candidate["context_signature"])
         existing = next(
@@ -187,6 +193,7 @@ def upsert_tracker(store: dict[str, Any], candidate: dict[str, Any], updated_at:
                 if record.get("symbol") == candidate["symbol"]
                 and record.get("direction") == candidate["direction"]
                 and record.get("context_signature_hash") == candidate_context_hash
+                and _episode_status(record) == "OPEN"
                 and record.get("status") in {"ACTIVE", "DETERIORATING"}
             ),
             None,
@@ -228,6 +235,10 @@ def record_production_conversion(record: dict[str, Any], sequence_id: str, conve
     record["price_change_before_conversion_pct"] = _pct_change(record["direction"], float(record["origin_price"]), float(conversion_price))
     record["status"] = "CONVERTED"
     record["terminal_reason"] = "NEW_PRODUCTION_SEQUENCE_STARTED"
+    record["episode_status"] = "CLOSED"
+    record["context_break_reason"] = "PRODUCTION_CONVERSION"
+    record["context_break_reasons"] = ["PRODUCTION_CONVERSION"]
+    record["context_break_timestamp"] = int(conversion_timestamp)
     return record
 
 
@@ -236,6 +247,7 @@ def terminalize_tracker(record: dict[str, Any], reason: str) -> dict[str, Any]:
         raise ValueError(f"invalid terminal reason: {reason}")
     record["status"] = "TERMINAL"
     record["terminal_reason"] = reason
+    record["episode_status"] = "CLOSED"
     return record
 
 
@@ -251,6 +263,7 @@ def update_horizon_outcomes(record: dict[str, Any], frame: MarketDataFrame, hori
     if all(record["outcomes"][h]["horizon_status"] == "COMPLETE" for h in ("1H", "4H", "12H", "24H")):
         record["status"] = "OUTCOME_COMPLETE"
         record["terminal_reason"] = "MAX_HORIZON_COMPLETE"
+        record["episode_status"] = "CLOSED"
     return record
 
 
@@ -478,6 +491,25 @@ def _historical_external(external: dict[str, Any] | None) -> dict[str, Any]:
 
 def _canonical_context(context: dict[str, Any]) -> dict[str, Any]:
     return {str(key): context[key] for key in sorted(context)}
+
+
+def _with_episode_defaults(store: dict[str, Any]) -> dict[str, Any]:
+    for record in store.get("records", []):
+        status = record.get("status")
+        if record.get("episode_status") not in EPISODE_STATUSES:
+            record["episode_status"] = "CLOSED" if status in {"CONVERTED", "TERMINAL", "OUTCOME_COMPLETE"} else "OPEN"
+        record.setdefault("context_break_observation", None)
+        record.setdefault("context_break_timestamp", None)
+        record.setdefault("context_break_reason", None)
+        record.setdefault("context_break_reasons", [])
+    return store
+
+
+def _episode_status(record: dict[str, Any]) -> str:
+    status = record.get("episode_status")
+    if status in EPISODE_STATUSES:
+        return str(status)
+    return "CLOSED" if record.get("status") in {"CONVERTED", "TERMINAL", "OUTCOME_COMPLETE"} else "OPEN"
 
 
 def _validate_store_is_research_only(store: dict[str, Any]) -> None:
