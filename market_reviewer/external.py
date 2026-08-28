@@ -19,6 +19,7 @@ from .model import (
     utc_now_iso,
     validate_generation,
 )
+from .missed_opportunity import DEFAULT_TRACKER_PATH, load_tracker_store, pending_outcome_required_start_by_symbol
 from .persistence import load_review_state
 from .providers import CRYPTO_PROVIDER_ORDER, MarketDataProvider, default_crypto_providers
 
@@ -99,21 +100,26 @@ def build_fetch_depth_plan(
     return FetchDepthPlan(timeframe, previous_review_timestamp, target_timestamp, replay_required, context_required_bars, safety_buffer_bars, requested, coverage_start)
 
 
-def fetch_depth_plan_for_state(fetch_timestamp: int, state_path: Path | None = None) -> dict[str, dict[str, FetchDepthPlan]]:
+def fetch_depth_plan_for_state(
+    fetch_timestamp: int,
+    state_path: Path | None = None,
+    research_tracker_path: Path | None = None,
+) -> dict[str, dict[str, FetchDepthPlan]]:
     previous, _ = load_review_state(state_path)
-    return _plans_from_previous(fetch_timestamp, previous)
+    return _plans_from_previous(fetch_timestamp, previous, _research_required_starts(research_tracker_path))
 
 
 def fetch_depth_plan_for_mode(
     fetch_timestamp: int,
     mode: str = FETCH_MODE_BOOTSTRAP,
     state_path: Path | None = None,
+    research_tracker_path: Path | None = DEFAULT_TRACKER_PATH,
 ) -> dict[str, dict[str, FetchDepthPlan]]:
     if mode not in FETCH_MODES:
         raise ValueError(f"unknown fetch mode: {mode}")
     if mode == FETCH_MODE_PRODUCTION_REPLAY:
         previous, _ = load_required_replay_state(state_path)
-        return _plans_from_previous(fetch_timestamp, previous)
+        return _plans_from_previous(fetch_timestamp, previous, _research_required_starts(research_tracker_path))
     previous, _ = load_review_state(state_path)
     return _plans_from_previous(fetch_timestamp, previous)
 
@@ -162,17 +168,31 @@ def replay_state_diagnostics(state_path: Path | None) -> dict[str, object]:
     }
 
 
-def _plans_from_previous(fetch_timestamp: int, previous: dict[str, dict]) -> dict[str, dict[str, FetchDepthPlan]]:
+def _plans_from_previous(
+    fetch_timestamp: int,
+    previous: dict[str, dict],
+    research_required_starts: dict[str, int] | None = None,
+) -> dict[str, dict[str, FetchDepthPlan]]:
     plans = {}
+    research_starts = research_required_starts or {}
     for symbol in ACTIVE_SYMBOLS:
         previous_timestamp = None
         if symbol in previous:
             previous_timestamp = int(previous[symbol].get("previous_review_timestamp") or 0) or None
-        plans[symbol] = {
-            timeframe: build_fetch_depth_plan(timeframe, fetch_timestamp, previous_timestamp)
-            for timeframe in TIMEFRAME_SECONDS
-        }
+        plans[symbol] = {}
+        for timeframe in TIMEFRAME_SECONDS:
+            effective_previous = previous_timestamp
+            if timeframe == "M5" and symbol in research_starts:
+                research_anchor = max(0, int(research_starts[symbol]) - TIMEFRAME_SECONDS[timeframe])
+                effective_previous = research_anchor if effective_previous is None else min(effective_previous, research_anchor)
+            plans[symbol][timeframe] = build_fetch_depth_plan(timeframe, fetch_timestamp, effective_previous)
     return plans
+
+
+def _research_required_starts(path: Path | None) -> dict[str, int]:
+    if path is None or not path.exists():
+        return {}
+    return pending_outcome_required_start_by_symbol(load_tracker_store(path), timeframe="M5")
 
 
 def _fetch_ohlcv(provider: MarketDataProvider, symbol: str, timeframe: str, limit: int, end_timestamp: int | None) -> list[Candle]:
@@ -364,13 +384,14 @@ def run_external_fetch(
     fetch_timestamp: int | None = None,
     state_path: Path | None = None,
     mode: str = FETCH_MODE_BOOTSTRAP,
+    research_tracker_path: Path | None = DEFAULT_TRACKER_PATH,
 ) -> Path:
     timestamp = int(time.time()) if fetch_timestamp is None else fetch_timestamp
     effective_state_path = state_path if state_path is not None else Path("reviews/thesis-baseline.json")
     if mode == FETCH_MODE_PRODUCTION_REPLAY:
-        depth_plans = fetch_depth_plan_for_mode(timestamp, mode, effective_state_path)
+        depth_plans = fetch_depth_plan_for_mode(timestamp, mode, effective_state_path, research_tracker_path)
     else:
         bootstrap_state = effective_state_path if effective_state_path.exists() else None
-        depth_plans = fetch_depth_plan_for_mode(timestamp, mode, bootstrap_state)
+        depth_plans = fetch_depth_plan_for_mode(timestamp, mode, bootstrap_state, None)
     snapshot = fetch_external_generation(default_crypto_providers(), timestamp, depth_plans)
     return publish_artifact(snapshot, output_dir)

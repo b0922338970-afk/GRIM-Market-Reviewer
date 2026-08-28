@@ -23,6 +23,7 @@ DOMAIN_CLASSIFICATIONS = {
     "POSITIVE",
     "NEUTRAL",
     "NEGATIVE",
+    "RAW_DATA_AVAILABLE_BUT_UNCLASSIFIED",
     "DATA_UNAVAILABLE",
     "NOT_APPLICABLE",
 }
@@ -152,6 +153,7 @@ def build_external_market_evidence(
         "raw_metrics": normalized,
         "relation_features": relation_features,
         "domain_classification": domain_classification,
+        "external_health": external_health(normalized, relation_features),
     }
 
 
@@ -161,8 +163,8 @@ def relation_features_from_metrics(
     snapshot_timestamp: int,
 ) -> dict[str, dict[str, Any]]:
     features = {}
-    price_change = _number(context.get("price_change_pct"))
-    oi_change = _first_number(metrics, ("oi_change_5m", "oi_change_15m", "oi_change_1h", "oi_change_4h"))
+    generic_price_change = _number(context.get("price_change_pct"))
+    price_change, oi_change = _aligned_price_oi_change(metrics, context)
     features["OI_PRICE_RELATION"] = _feature("OI_PRICE_RELATION", "POSITIONING", "OBSERVATION_FEATURE", classify_oi_price_relation(price_change, oi_change), snapshot_timestamp, _evidence(metrics, ("oi_change_5m", "oi_change_15m", "oi_change_1h", "oi_change_4h")))
 
     spot_change = _available_number(metrics.get("spot_cvd_change"))
@@ -171,24 +173,27 @@ def relation_features_from_metrics(
 
     funding_rate = _available_number(metrics.get("funding_rate"))
     funding_percentile = _available_number(metrics.get("funding_percentile"))
-    features["FUNDING_CROWDING_RELATION"] = _feature("FUNDING_CROWDING_RELATION", "CROWDING", "OBSERVATION_FEATURE", classify_funding_relation(price_change, funding_rate, funding_percentile), snapshot_timestamp, _evidence(metrics, ("funding_rate", "funding_percentile", "funding_change")))
+    features["FUNDING_CROWDING_RELATION"] = _feature("FUNDING_CROWDING_RELATION", "CROWDING", "OBSERVATION_FEATURE", classify_funding_relation(generic_price_change, funding_rate, funding_percentile), snapshot_timestamp, _evidence(metrics, ("funding_rate", "funding_percentile", "funding_change")))
 
     cluster_distance = _available_number(metrics.get("liq_cluster_distance_pct"))
     liq_asymmetry = _available_number(metrics.get("liq_cluster_asymmetry"))
     long_liq = _first_number(metrics, ("long_liquidation_notional_5m", "long_liquidation_notional_15m", "long_liquidation_notional_1h", "long_liquidation_notional"))
     short_liq = _first_number(metrics, ("short_liquidation_notional_5m", "short_liquidation_notional_15m", "short_liquidation_notional_1h", "short_liquidation_notional"))
-    features["LIQUIDATION_CONTEXT_RELATION"] = _feature("LIQUIDATION_CONTEXT_RELATION", "LIQUIDATION_CONTEXT", "OBSERVATION_FEATURE", classify_liquidation_relation(cluster_distance, liq_asymmetry, long_liq, short_liq), snapshot_timestamp, _evidence(metrics, ("liq_cluster_distance_pct", "liq_cluster_asymmetry", "long_liquidation_notional_5m", "short_liquidation_notional_5m", "long_liquidation_notional_15m", "short_liquidation_notional_15m", "long_liquidation_notional_1h", "short_liquidation_notional_1h", "long_liquidation_notional", "short_liquidation_notional")))
+    liquidation_coverage = _liquidation_coverage_status(metrics)
+    features["LIQUIDATION_CONTEXT_RELATION"] = _feature("LIQUIDATION_CONTEXT_RELATION", "LIQUIDATION_CONTEXT", "OBSERVATION_FEATURE", classify_liquidation_relation(cluster_distance, liq_asymmetry, long_liq, short_liq, liquidation_coverage), snapshot_timestamp, _evidence(metrics, ("liq_cluster_distance_pct", "liq_cluster_asymmetry", "long_liquidation_notional_5m", "short_liquidation_notional_5m", "long_liquidation_notional_15m", "short_liquidation_notional_15m", "long_liquidation_notional_1h", "short_liquidation_notional_1h", "long_liquidation_notional", "short_liquidation_notional")))
 
     buy = _available_number(metrics.get("large_buy_notional"))
     sell = _available_number(metrics.get("large_sell_notional"))
     imbalance = _available_number(metrics.get("large_order_imbalance"))
-    features["LARGE_ORDER_FLOW_RELATION"] = _feature("LARGE_ORDER_FLOW_RELATION", "CAPITAL_FLOW", "DECISION_FEATURE_CANDIDATE", classify_large_order_relation(price_change, buy, sell, imbalance), snapshot_timestamp, _evidence(metrics, ("large_buy_notional", "large_sell_notional", "large_order_imbalance", "net_capital_flow")))
+    features["LARGE_ORDER_FLOW_RELATION"] = _feature("LARGE_ORDER_FLOW_RELATION", "CAPITAL_FLOW", "DECISION_FEATURE_CANDIDATE", classify_large_order_relation(generic_price_change, buy, sell, imbalance), snapshot_timestamp, _evidence(metrics, ("large_buy_notional", "large_sell_notional", "large_order_imbalance", "net_capital_flow")))
     return features
 
 
 def classify_oi_price_relation(price_change_pct: float | None, oi_change: float | None) -> str:
-    if price_change_pct is None or oi_change is None:
+    if oi_change is None:
         return "DATA_UNAVAILABLE"
+    if price_change_pct is None:
+        return "RAW_DATA_AVAILABLE_BUT_UNCLASSIFIED"
     if price_change_pct > 0 and oi_change > 0:
         return "PRICE_UP_OI_UP"
     if price_change_pct > 0 and oi_change < 0:
@@ -197,7 +202,11 @@ def classify_oi_price_relation(price_change_pct: float | None, oi_change: float 
         return "PRICE_DOWN_OI_UP"
     if price_change_pct < 0 and oi_change < 0:
         return "PRICE_DOWN_OI_DOWN"
-    return "NEUTRAL"
+    if price_change_pct == 0 and oi_change > 0:
+        return "PRICE_FLAT_OI_UP"
+    if price_change_pct == 0 and oi_change < 0:
+        return "PRICE_FLAT_OI_DOWN"
+    return "PRICE_OI_NEUTRAL"
 
 
 def classify_cvd_relation(spot_cvd_change: float | None, perp_cvd_change: float | None) -> str:
@@ -232,6 +241,7 @@ def classify_liquidation_relation(
     cluster_asymmetry: float | None,
     long_liquidation_notional: float | None,
     short_liquidation_notional: float | None,
+    coverage_status: str | None = None,
 ) -> str:
     if all(value is None for value in (cluster_distance_pct, cluster_asymmetry, long_liquidation_notional, short_liquidation_notional)):
         return "DATA_UNAVAILABLE"
@@ -245,6 +255,8 @@ def classify_liquidation_relation(
         return "LIQ_CLUSTER_APPROACH"
     if cluster_asymmetry is not None:
         return "NEUTRAL"
+    if long_liquidation_notional == 0 and short_liquidation_notional == 0:
+        return "NEUTRAL" if coverage_status in {None, "COMPLETE", "AVAILABLE"} else "DATA_UNAVAILABLE"
     return "DATA_UNAVAILABLE"
 
 
@@ -344,13 +356,60 @@ def _domain(domain: str, features: list[dict[str, Any]]) -> dict[str, Any]:
     available = [relation for relation in relations if relation != "DATA_UNAVAILABLE"]
     if not available:
         classification = "DATA_UNAVAILABLE"
-    elif any(relation in {"LONG_CROWDING", "SHORT_CROWDING", "SPOT_PERP_DIVERGENCE", "LARGE_BUY_ABSORBED", "LARGE_SELL_ABSORBED"} for relation in available):
+    elif all(relation == "RAW_DATA_AVAILABLE_BUT_UNCLASSIFIED" for relation in available):
+        classification = "RAW_DATA_AVAILABLE_BUT_UNCLASSIFIED"
+    elif any(relation in {"LONG_CROWDING", "SHORT_CROWDING", "SPOT_PERP_DIVERGENCE", "LARGE_BUY_ABSORBED", "LARGE_SELL_ABSORBED", "PRICE_DOWN_OI_UP"} for relation in available):
         classification = "NEGATIVE"
-    elif any(relation not in {"NEUTRAL"} for relation in available):
+    elif any(relation in {"PRICE_UP_OI_UP", "LIQ_CLUSTER_APPROACH", "LIQ_CLUSTER_SWEPT", "LONG_LIQUIDATION_FLUSH", "SHORT_LIQUIDATION_SQUEEZE", "SPOT_PERP_CONFIRMATION", "SPOT_LED_BUYING", "PERP_LED_BUYING", "LARGE_BUY_WITH_PRICE_PROGRESS", "LARGE_SELL_WITH_PRICE_PROGRESS"} for relation in available):
         classification = "POSITIVE"
     else:
         classification = "NEUTRAL"
     return {"domain": domain, "classification": classification, "source_evidence_ids": evidence_ids, "relations": relations}
+
+
+def external_health(metrics: dict[str, dict[str, Any]], features: dict[str, dict[str, Any]]) -> dict[str, int]:
+    raw_available = sum(1 for item in metrics.values() if item.get("availability") == "AVAILABLE")
+    raw_unavailable = sum(1 for item in metrics.values() if item.get("availability") != "AVAILABLE")
+    relations = [feature["value"]["relation"] for feature in features.values()]
+    data_unavailable = sum(1 for relation in relations if relation == "DATA_UNAVAILABLE")
+    unclassified = sum(1 for relation in relations if relation == "RAW_DATA_AVAILABLE_BUT_UNCLASSIFIED")
+    return {
+        "raw_available": raw_available,
+        "raw_unavailable": raw_unavailable,
+        "classified": len(relations) - data_unavailable - unclassified,
+        "unclassified_available": unclassified,
+        "data_unavailable": data_unavailable,
+    }
+
+
+def _aligned_price_oi_change(metrics: dict[str, dict[str, Any]], context: dict[str, Any]) -> tuple[float | None, float | None]:
+    pairs = (
+        ("oi_change_5m", "price_change_5m_pct"),
+        ("oi_change_15m", "price_change_15m_pct"),
+        ("oi_change_1h", "price_change_1h_pct"),
+        ("oi_change_4h", "price_change_4h_pct"),
+    )
+    for oi_key, price_key in pairs:
+        oi_change = _available_number(metrics.get(oi_key))
+        if oi_change is not None:
+            price_change = _number(context.get(price_key))
+            if price_change is None and "price_change_pct" in context:
+                price_change = _number(context.get("price_change_pct"))
+            return price_change, oi_change
+    return None, None
+
+
+def _liquidation_coverage_status(metrics: dict[str, dict[str, Any]]) -> str:
+    for window in ("5m", "15m", "1h", ""):
+        suffix = f"_{window}" if window else ""
+        long_item = metrics.get(f"long_liquidation_notional{suffix}")
+        short_item = metrics.get(f"short_liquidation_notional{suffix}")
+        if not long_item or not short_item:
+            continue
+        if long_item.get("availability") == "AVAILABLE" and short_item.get("availability") == "AVAILABLE":
+            return str(long_item.get("coverage_status") or short_item.get("coverage_status") or "COMPLETE")
+        return str(long_item.get("coverage_status") or short_item.get("coverage_status") or "UNAVAILABLE")
+    return "UNAVAILABLE"
 
 
 def _available_number(item: dict[str, Any] | None) -> float | None:

@@ -33,6 +33,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=FETCH_MODE_BOOTSTRAP,
         help="Fetch contract: bootstrap allows no state; production-replay requires replay state and fails closed",
     )
+    fetch.add_argument("--research-store", default="research/missed-opportunities.json", help="Optional research tracker store used only to extend outcome coverage depth")
     evidence = subparsers.add_parser("fetch-external-evidence", help="Fetch research-only external-market-evidence.v1 artifact")
     evidence.add_argument("--output-dir", default="artifact", help="Directory for external-market-evidence-v1.json")
     liquidations = subparsers.add_parser("collect-liquidations", help="Collect research-only liquidation stream events")
@@ -56,7 +57,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "fetch-external":
         try:
             state_path = Path(args.state) if args.state else None
-            path = run_external_fetch(Path(args.output_dir), state_path=state_path, mode=args.mode)
+            research_path = Path(args.research_store) if args.research_store else None
+            path = run_external_fetch(Path(args.output_dir), state_path=state_path, mode=args.mode, research_tracker_path=research_path)
         except (ReplayStateUnavailableForFetch, ReplayHistoryTooOld) as exc:
             print(str(exc))
             return 2

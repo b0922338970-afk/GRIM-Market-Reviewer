@@ -124,6 +124,44 @@ class ExternalEvidenceV423Tests(unittest.TestCase):
             self.assertNotIn("score", feature)
             self.assertNotIn("weight", feature)
 
+    def test_raw_oi_available_without_price_context_is_unclassified_not_unavailable(self) -> None:
+        evidence = build_external_market_evidence("BTC", SNAPSHOT_TS, {"oi_change_1h": sample_metric("oi_change_1h", 10.0)})
+        relation = evidence["relation_features"]["OI_PRICE_RELATION"]["value"]["relation"]
+        self.assertEqual(relation, "RAW_DATA_AVAILABLE_BUT_UNCLASSIFIED")
+        self.assertEqual(evidence["domain_classification"]["POSITIONING"]["classification"], "RAW_DATA_AVAILABLE_BUT_UNCLASSIFIED")
+        self.assertGreater(evidence["external_health"]["unclassified_available"], 0)
+
+    def test_raw_oi_absent_remains_data_unavailable(self) -> None:
+        evidence = build_external_market_evidence("BTC", SNAPSHOT_TS)
+        self.assertEqual(evidence["relation_features"]["OI_PRICE_RELATION"]["value"]["relation"], "DATA_UNAVAILABLE")
+
+    def test_aligned_price_up_oi_up(self) -> None:
+        evidence = build_external_market_evidence("BTC", SNAPSHOT_TS, {"oi_change_5m": sample_metric("oi_change_5m", 1.0)}, {"price_change_5m_pct": 0.2})
+        self.assertEqual(evidence["relation_features"]["OI_PRICE_RELATION"]["value"]["relation"], "PRICE_UP_OI_UP")
+
+    def test_aligned_price_up_oi_down(self) -> None:
+        evidence = build_external_market_evidence("BTC", SNAPSHOT_TS, {"oi_change_15m": sample_metric("oi_change_15m", -1.0)}, {"price_change_15m_pct": 0.2})
+        self.assertEqual(evidence["relation_features"]["OI_PRICE_RELATION"]["value"]["relation"], "PRICE_UP_OI_DOWN")
+
+    def test_aligned_price_down_oi_up(self) -> None:
+        evidence = build_external_market_evidence("BTC", SNAPSHOT_TS, {"oi_change_1h": sample_metric("oi_change_1h", 1.0)}, {"price_change_1h_pct": -0.2})
+        self.assertEqual(evidence["relation_features"]["OI_PRICE_RELATION"]["value"]["relation"], "PRICE_DOWN_OI_UP")
+        self.assertNotEqual(evidence["relation_features"]["OI_PRICE_RELATION"]["value"]["relation"], "PRICE_OI_BUILD")
+
+    def test_aligned_price_down_oi_down(self) -> None:
+        evidence = build_external_market_evidence("BTC", SNAPSHOT_TS, {"oi_change_4h": sample_metric("oi_change_4h", -1.0)}, {"price_change_4h_pct": -0.2})
+        self.assertEqual(evidence["relation_features"]["OI_PRICE_RELATION"]["value"]["relation"], "PRICE_DOWN_OI_DOWN")
+
+    def test_complete_zero_liquidation_is_neutral(self) -> None:
+        evidence = build_external_market_evidence("BTC", SNAPSHOT_TS, {
+            "long_liquidation_notional_5m": sample_metric("long_liquidation_notional_5m", 0.0),
+            "short_liquidation_notional_5m": sample_metric("short_liquidation_notional_5m", 0.0),
+        })
+        self.assertEqual(evidence["domain_classification"]["LIQUIDATION_CONTEXT"]["classification"], "NEUTRAL")
+
+    def test_incomplete_zero_liquidation_is_not_neutral(self) -> None:
+        self.assertNotEqual(classify_liquidation_relation(None, None, 0.0, 0.0, "PARTIAL"), "NEUTRAL")
+
     def _opportunity_snapshot(self) -> dict:
         with tempfile.TemporaryDirectory() as directory:
             state_path = Path(directory) / "state.json"

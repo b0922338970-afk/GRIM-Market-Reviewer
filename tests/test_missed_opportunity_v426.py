@@ -270,7 +270,23 @@ class MissedOpportunityTrackerV426Tests(unittest.TestCase):
 
     def test_relation_features_are_research_only(self) -> None:
         c = candidate(external_evidence={"oi_delta_1h": 10, "oi_delta_4h": 5})
-        self.assertEqual(relation_features(c), ["ZERO_LIQUIDATION_CONTEXT", "PRICE_OI_BUILD", "POSITIONING_REBUILD"])
+        self.assertEqual(relation_features(c), ["POSITIONING_REBUILD"])
+
+    def test_relation_features_price_down_oi_up(self) -> None:
+        c = candidate(price=99, external_evidence={"oi_delta_1h": 10})
+        self.assertEqual(relation_features(c, previous_price=100), ["PRICE_DOWN_OI_UP"])
+
+    def test_relation_features_price_up_oi_up(self) -> None:
+        c = candidate(price=101, external_evidence={"oi_delta_1h": 10})
+        self.assertEqual(relation_features(c, previous_price=100), ["PRICE_UP_OI_UP"])
+
+    def test_relation_features_complete_zero_liquidation_context(self) -> None:
+        c = candidate(external_evidence={"liquidation_5m": {"long": 0, "short": 0, "coverage_status": "COMPLETE"}})
+        self.assertIn("ZERO_LIQUIDATION_CONTEXT", relation_features(c))
+
+    def test_relation_features_incomplete_zero_liquidation_not_neutral(self) -> None:
+        c = candidate(external_evidence={"liquidation_5m": {"long": 0, "short": 0, "coverage_status": "PARTIAL"}})
+        self.assertNotIn("ZERO_LIQUIDATION_CONTEXT", relation_features(c))
 
     def test_store_rejects_execution_keys(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -325,6 +341,45 @@ class MissedOpportunityTrackerV426Tests(unittest.TestCase):
         original = copy.deepcopy(record["snapshots"][0])
         append_snapshot(record, candidate(observation_number=47, timestamp=1_300, price=101), updated_at="fixed")
         self.assertEqual(record["snapshots"][0], original)
+
+    def test_recovered_horizons_include_outcome_only_provenance(self) -> None:
+        record = create_tracker(candidate(timestamp=1_000, price=100), created_at="fixed")
+        update_horizon_outcomes(record, frame(continuous_candles(1_300, 288), latest_closed=87_400))
+        for horizon in ("1H", "4H", "12H", "24H"):
+            outcome = record["outcomes"][horizon]
+            self.assertEqual(outcome["horizon_status"], "COMPLETE")
+            self.assertEqual(outcome["outcome_source"], "historical_outcome_recovery")
+            self.assertTrue(outcome["outcome_coverage_complete"])
+
+    def test_partial_recovery_remains_data_gap(self) -> None:
+        result = calculate_horizon(direction="LONG", origin_timestamp=1_000, origin_price=100, frame=frame(continuous_candles(1_300, 11), latest_closed=4_600), horizon="1H")
+        self.assertEqual(result["horizon_status"], "DATA_GAP")
+        self.assertFalse(result["outcome_coverage_complete"])
+
+    def test_recovered_data_updates_outcomes_only(self) -> None:
+        record = create_tracker(candidate(timestamp=1_000, price=100), created_at="fixed")
+        snapshots_before = copy.deepcopy(record["snapshots"])
+        update_horizon_outcomes(record, frame(continuous_candles(1_300, 288), latest_closed=87_400))
+        self.assertEqual(record["snapshots"], snapshots_before)
+
+    def test_recovery_idempotent(self) -> None:
+        record = create_tracker(candidate(timestamp=1_000, price=100), created_at="fixed")
+        data = frame(continuous_candles(1_300, 288), latest_closed=87_400)
+        update_horizon_outcomes(record, data)
+        first = copy.deepcopy(record["outcomes"])
+        update_horizon_outcomes(record, data)
+        self.assertEqual(record["outcomes"], first)
+
+    def test_restart_reload_recovered_outcomes(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "research" / "missed-opportunities.json"
+            store = empty_store("fixed")
+            record = create_tracker(candidate(timestamp=1_000, price=100), created_at="fixed")
+            update_horizon_outcomes(record, frame(continuous_candles(1_300, 288), latest_closed=87_400))
+            store["records"].append(record)
+            persist_tracker_store(path, store)
+            loaded = load_tracker_store(path)
+            self.assertEqual(loaded["records"][0]["outcomes"], record["outcomes"])
 
 
 if __name__ == "__main__":

@@ -33,6 +33,13 @@ HORIZON_SECONDS = {
 TERMINAL_PRODUCTION_STATES = {"EXPIRED_NO_TRIGGER", "INVALIDATED"}
 RESEARCH_RELATION_LABELS = {
     "PRICE_OI_BUILD",
+    "PRICE_UP_OI_UP",
+    "PRICE_UP_OI_DOWN",
+    "PRICE_DOWN_OI_UP",
+    "PRICE_DOWN_OI_DOWN",
+    "PRICE_FLAT_OI_UP",
+    "PRICE_FLAT_OI_DOWN",
+    "PRICE_OI_NEUTRAL",
     "PRICE_OI_DIVERGENCE",
     "NON_LIQUIDATION_DELEVERAGING",
     "CROWDED_POSITION_BUILD",
@@ -289,6 +296,11 @@ def calculate_horizon(
         "time_to_MFE": None,
         "time_to_MAE": None,
         "price_field": "closed candle high/low",
+        "outcome_data_start": None,
+        "outcome_data_end": None,
+        "outcome_coverage_complete": False,
+        "outcome_updated_at": frame.latest_closed_candle_timestamp,
+        "outcome_source": "historical_outcome_recovery",
     }
     if frame.latest_closed_candle_timestamp < window_end:
         return base
@@ -299,12 +311,14 @@ def calculate_horizon(
     if not candles:
         base["horizon_status"] = "DATA_GAP"
         return base
+    base["outcome_data_start"] = candles[0].timestamp
+    base["outcome_data_end"] = candles[-1].timestamp
     expected = HORIZON_SECONDS[horizon] // TIMEFRAME_SECONDS.get(frame.timeframe, 300)
     if len(candles) < expected:
         base["horizon_status"] = "DATA_GAP"
         return base
     excursion = calculate_excursion(direction, origin_price, candles)
-    return {**base, "horizon_status": "COMPLETE", **excursion}
+    return {**base, "horizon_status": "COMPLETE", "outcome_coverage_complete": True, **excursion}
 
 
 def calculate_excursion(direction: str, origin_price: float, candles: list[Candle]) -> dict[str, Any]:
@@ -413,23 +427,49 @@ def _snapshot_from_candidate(
         "price_change_from_origin_pct": _pct_change(candidate["direction"], origin_price, price),
         "price_change_from_previous_snapshot_pct": None if previous_price is None else _pct_change(candidate["direction"], previous_price, price),
         "trajectory_state": trajectory_state,
-        "relation_features": relation_features(candidate),
+        "relation_features": relation_features(candidate, previous_price=previous_price),
     }
 
 
-def relation_features(candidate: dict[str, Any]) -> list[str]:
+def relation_features(candidate: dict[str, Any], previous_price: float | None = None) -> list[str]:
     external = candidate.get("external_evidence") or {}
-    evidence = candidate.get("opportunity_evidence") or {}
     labels: list[str] = []
-    if evidence.get("LIQUIDATION_CONTEXT") == "NEUTRAL":
+    if _has_complete_zero_liquidation_context(external):
         labels.append("ZERO_LIQUIDATION_CONTEXT")
     oi_1h = external.get("oi_delta_1h")
     oi_4h = external.get("oi_delta_4h")
-    if isinstance(oi_1h, (int, float)) and oi_1h > 0:
-        labels.append("PRICE_OI_BUILD")
+    current_price = _number(candidate.get("price"))
+    if isinstance(oi_1h, (int, float)):
+        relation = _directional_price_oi_label(previous_price, current_price, oi_1h)
+        if relation:
+            labels.append(relation)
     if isinstance(oi_4h, (int, float)) and oi_4h > 0:
         labels.append("POSITIONING_REBUILD")
     return [item for item in labels if item in RESEARCH_RELATION_LABELS]
+
+
+def pending_outcome_required_start_by_symbol(store: dict[str, Any], timeframe: str = "M5") -> dict[str, int]:
+    required: dict[str, int] = {}
+    seconds = TIMEFRAME_SECONDS[timeframe]
+    for record in store.get("records", []):
+        outcomes = record.get("outcomes") or {}
+        if outcomes and all(outcome.get("horizon_status") == "COMPLETE" for outcome in outcomes.values()):
+            continue
+        if not any((outcome.get("horizon_status") in {"PENDING", "DATA_GAP"}) for outcome in outcomes.values()):
+            continue
+        origin = _optional_int(record.get("origin_snapshot_timestamp"))
+        symbol = record.get("symbol")
+        if origin is None or not symbol:
+            continue
+        first_required = first_required_m5_after_origin(origin, seconds)
+        current = required.get(str(symbol))
+        required[str(symbol)] = first_required if current is None else min(current, first_required)
+    return required
+
+
+def first_required_m5_after_origin(origin_timestamp: int, seconds: int = 300) -> int:
+    timestamp = int(origin_timestamp)
+    return timestamp + (seconds - timestamp % seconds if timestamp % seconds else seconds)
 
 
 def _trajectory_state(direction: str, origin_price: float, previous_price: float, current_price: float) -> str:
@@ -519,6 +559,54 @@ def _validate_store_is_research_only(store: dict[str, Any]) -> None:
     for key in FORBIDDEN_EXECUTION_KEYS:
         if f'"{key}"' in payload:
             raise ValueError(f"execution field forbidden in research tracker: {key}")
+
+
+def _directional_price_oi_label(previous_price: float | None, current_price: float | None, oi_delta: float) -> str | None:
+    if previous_price is None or current_price is None:
+        return None
+    price_delta = current_price - float(previous_price)
+    if price_delta > 0 and oi_delta > 0:
+        return "PRICE_UP_OI_UP"
+    if price_delta > 0 and oi_delta < 0:
+        return "PRICE_UP_OI_DOWN"
+    if price_delta < 0 and oi_delta > 0:
+        return "PRICE_DOWN_OI_UP"
+    if price_delta < 0 and oi_delta < 0:
+        return "PRICE_DOWN_OI_DOWN"
+    if price_delta == 0 and oi_delta > 0:
+        return "PRICE_FLAT_OI_UP"
+    if price_delta == 0 and oi_delta < 0:
+        return "PRICE_FLAT_OI_DOWN"
+    return "PRICE_OI_NEUTRAL"
+
+
+def _has_complete_zero_liquidation_context(external: dict[str, Any]) -> bool:
+    for key in ("liquidation_5m", "liquidation_15m", "liquidation_1h"):
+        window = external.get(key)
+        if not isinstance(window, dict):
+            continue
+        if window.get("coverage_status") not in {"AVAILABLE", "COMPLETE"}:
+            continue
+        if window.get("long") == 0 and window.get("short") == 0:
+            return True
+    return False
+
+
+def _number(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _optional_int(value: Any) -> int | None:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
 
 
 def _utc_now() -> str:

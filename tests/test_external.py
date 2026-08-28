@@ -25,6 +25,7 @@ from market_reviewer.external import (
     load_required_replay_state,
     publish_artifact,
 )
+from market_reviewer.missed_opportunity import backfill_46_49, persist_tracker_store
 from market_reviewer.model import Candle, DataUnavailable, TIMEFRAMES, TIMEFRAME_SECONDS, to_market_data_frame
 from market_reviewer.providers import choose_complete_provider
 
@@ -290,6 +291,47 @@ class DynamicFetchDepthTests(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             fetch_external_generation([PaginatedProvider("binance", set(TIMEFRAMES))], 1_700_200_000)
         self.assertEqual(before, {"BTC": "state"})
+
+    def test_research_tracker_origin_expands_m5_fetch_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "review-state.v2.json"
+            research = Path(directory) / "missed-opportunities.json"
+            write_replay_state(state, btc_timestamp=1_787_850_000, eth_timestamp=1_787_850_000)
+            persist_tracker_store(research, backfill_46_49("fixed"))
+            plans = fetch_depth_plan_for_mode(1_787_916_300, FETCH_MODE_PRODUCTION_REPLAY, state, research)
+            self.assertEqual(plans["BTC"]["M5"].previous_review_timestamp, 1_787_827_800)
+            self.assertEqual(plans["BTC"]["M5"].coverage_start_timestamp, 1_787_813_100)
+            self.assertGreater(plans["BTC"]["M5"].requested_bars, 200)
+
+    def test_oldest_pending_tracker_selected_per_symbol(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "review-state.v2.json"
+            research = Path(directory) / "missed-opportunities.json"
+            write_replay_state(state, btc_timestamp=1_787_850_000, eth_timestamp=1_787_850_000)
+            store = backfill_46_49("fixed")
+            next(record for record in store["records"] if record["symbol"] == "ETH")["origin_snapshot_timestamp"] = 1_787_840_000
+            persist_tracker_store(research, store)
+            plans = fetch_depth_plan_for_mode(1_787_916_300, FETCH_MODE_PRODUCTION_REPLAY, state, research)
+            self.assertEqual(plans["BTC"]["M5"].previous_review_timestamp, 1_787_827_800)
+            self.assertEqual(plans["ETH"]["M5"].previous_review_timestamp, 1_787_839_800)
+
+    def test_complete_trackers_do_not_expand_fetch_coverage(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "review-state.v2.json"
+            research = Path(directory) / "missed-opportunities.json"
+            write_replay_state(state, btc_timestamp=1_787_850_000, eth_timestamp=1_787_850_000)
+            store = backfill_46_49("fixed")
+            for record in store["records"]:
+                for outcome in record["outcomes"].values():
+                    outcome["horizon_status"] = "COMPLETE"
+            persist_tracker_store(research, store)
+            plans = fetch_depth_plan_for_mode(1_787_916_300, FETCH_MODE_PRODUCTION_REPLAY, state, research)
+            self.assertEqual(plans["BTC"]["M5"].previous_review_timestamp, 1_787_850_000)
+
+    def test_required_first_m5_alignment_for_tracker_origin(self) -> None:
+        from market_reviewer.missed_opportunity import first_required_m5_after_origin
+
+        self.assertEqual(first_required_m5_after_origin(1_787_827_800), 1_787_828_100)
 
 
 if __name__ == "__main__":

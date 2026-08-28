@@ -12,6 +12,7 @@ import copy
 from pathlib import Path
 from typing import Any, Callable
 
+from .external_evidence import build_external_market_evidence
 from .missed_opportunity import (
     DEFAULT_TRACKER_PATH,
     append_snapshot,
@@ -239,7 +240,8 @@ def build_tracker_candidate_from_observation(
     direction = _direction_from_review(review)
     snapshot_timestamp = int(opportunity_snapshot.get("snapshot_timestamp") or _latest_closed(frames))
     price = frames["M5"].closed_candles()[-1].close
-    evidence = opportunity_evidence_from_snapshot(opportunity_snapshot, external_evidence)
+    enriched_external = enrich_external_evidence_with_price_context(symbol, frames, external_evidence)
+    evidence = opportunity_evidence_from_snapshot(opportunity_snapshot, enriched_external)
     return build_origin_candidate(
         symbol=symbol,
         direction=direction,
@@ -250,7 +252,7 @@ def build_tracker_candidate_from_observation(
         production_sequence_state=str(review.get("Sequence_State") or opportunity_snapshot.get("sequence_state") or "UNKNOWN"),
         production_review_state=str(review.get("State") or "UNKNOWN"),
         opportunity_evidence=evidence,
-        external_evidence=external_tracker_fields(external_evidence),
+        external_evidence=external_tracker_fields(enriched_external),
         risk_signatures=list(opportunity_snapshot.get("risk_signatures") or []),
         new_legal_genesis_active=_new_legal_genesis_in_review(review),
     )
@@ -302,6 +304,37 @@ def external_tracker_fields(external_evidence: dict[str, Any] | None) -> dict[st
         ),
         "provenance": "current observation external evidence" if external_evidence else "external evidence unavailable for current observation",
     }
+
+
+def enrich_external_evidence_with_price_context(
+    symbol: str,
+    frames: dict[str, MarketDataFrame],
+    external_evidence: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    if not external_evidence:
+        return None
+    metrics = external_evidence.get("raw_metrics") or {}
+    snapshot_timestamp = int(external_evidence.get("snapshot_timestamp") or _latest_closed(frames))
+    context = price_change_context_from_frames(frames, snapshot_timestamp)
+    return build_external_market_evidence(symbol, snapshot_timestamp, metrics, context)
+
+
+def price_change_context_from_frames(frames: dict[str, MarketDataFrame], snapshot_timestamp: int) -> dict[str, float]:
+    m5 = frames.get("M5")
+    if m5 is None:
+        return {}
+    closed = [candle for candle in m5.closed_candles() if candle.timestamp <= snapshot_timestamp]
+    by_timestamp = {candle.timestamp: candle for candle in closed}
+    if not closed:
+        return {}
+    current = closed[-1]
+    context = {}
+    for label, seconds in (("5m", 300), ("15m", 900), ("1h", 3600), ("4h", 14_400)):
+        previous = by_timestamp.get(current.timestamp - seconds)
+        if previous is None or previous.close == 0:
+            continue
+        context[f"price_change_{label}_pct"] = (current.close / previous.close - 1) * 100
+    return context
 
 
 def _apply_symbol_observation(

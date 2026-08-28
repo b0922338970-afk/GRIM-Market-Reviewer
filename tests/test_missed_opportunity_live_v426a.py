@@ -20,6 +20,7 @@ from market_reviewer.missed_opportunity_live import (
     load_or_initialize_research_store,
     missed_opportunity_status,
     opportunity_evidence_from_snapshot,
+    price_change_context_from_frames,
     tracker_health,
 )
 from market_reviewer.model import Candle, MarketDataFrame
@@ -318,7 +319,8 @@ class MissedOpportunityLiveV426aTests(unittest.TestCase):
             path = Path(tmp) / "research" / "missed-opportunities.json"
             apply_once(path)
             latest = load_tracker_store(path)["records"][0]["snapshots"][-1]
-            self.assertIn("PRICE_OI_BUILD", latest["relation_features"])
+            self.assertIn("ZERO_LIQUIDATION_CONTEXT", latest["relation_features"])
+            self.assertNotIn("PRICE_OI_BUILD", latest["relation_features"])
 
     def test_tracker_health_report(self) -> None:
         health = tracker_health(backfill_46_49("fixed"))
@@ -412,6 +414,30 @@ class MissedOpportunityLiveV426aTests(unittest.TestCase):
             self.assertEqual(len(store["records"]), 1)
             self.assertEqual(store["records"][0]["tracker_id"], original_id)
             self.assertEqual(len(store["records"][0]["snapshots"]), 2)
+
+    def test_price_context_from_frames_uses_matching_oi_horizons(self) -> None:
+        fr = frames("BTC", price=100, count=60)
+        context = price_change_context_from_frames(fr, fr["M5"].latest_closed_candle_timestamp)
+        self.assertIn("price_change_5m_pct", context)
+        self.assertIn("price_change_1h_pct", context)
+
+    def test_live_enrichment_classifies_price_down_oi_up_prospectively(self) -> None:
+        store = backfill_46_49("fixed")
+        fr = frame("BTC", start=SNAPSHOT_TS, count=20, price=100)
+        fr.candles = [candle(SNAPSHOT_TS + index * 300, 120 - index) for index in range(20)]
+        fr.latest_closed_candle_timestamp = fr.candles[-1].timestamp
+        fr.latest_candle_timestamp = fr.candles[-1].timestamp
+        all_frames = {tf: fr for tf in ("D1", "H4", "H1", "M15", "M5")}
+        ext = build_external_market_evidence("BTC", fr.latest_closed_candle_timestamp, {
+            "oi_change_1h": metric("oi_change_1h", 10, "fixture", fr.latest_closed_candle_timestamp, fr.latest_closed_candle_timestamp, "1h"),
+            "long_liquidation_notional_5m": metric("long_liquidation_notional_5m", 0, "fixture", fr.latest_closed_candle_timestamp, fr.latest_closed_candle_timestamp, "5m"),
+            "short_liquidation_notional_5m": metric("short_liquidation_notional_5m", 0, "fixture", fr.latest_closed_candle_timestamp, fr.latest_closed_candle_timestamp, "5m"),
+        })
+        updated, _ = dry_run_missed_opportunity_observation(store=store, reviews={"BTC": terminal_review("BTC")}, frames={"BTC": all_frames}, opportunity_snapshots={"BTC": opportunity("BTC")}, external_evidence={"BTC": ext}, observation_number=50)
+        btc = next(r for r in updated["records"] if r["symbol"] == "BTC")
+        self.assertIn("PRICE_DOWN_OI_UP", btc["snapshots"][-1]["relation_features"])
+        self.assertIn("ZERO_LIQUIDATION_CONTEXT", btc["snapshots"][-1]["relation_features"])
+        self.assertNotIn("PRICE_OI_BUILD", btc["snapshots"][-1]["relation_features"])
 
 if __name__ == "__main__":
     unittest.main()
