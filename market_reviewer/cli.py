@@ -15,6 +15,7 @@ from .external import (
 from .external_evidence_providers import run_external_evidence_fetch
 from .liquidation_collector import collect_liquidations, liquidation_status
 from .missed_opportunity_live import explicit_backfill_v426, missed_opportunity_status
+from .observation_coordinator import prepare_observation
 from .review_only import run_review_only
 
 
@@ -45,6 +46,11 @@ def build_parser() -> argparse.ArgumentParser:
     mot_backfill.add_argument("--path", default="research/missed-opportunities.json", help="Research tracker store path")
     mot_status = subparsers.add_parser("missed-opportunity-status", help="Show research-only missed opportunity tracker status")
     mot_status.add_argument("--path", default="research/missed-opportunities.json", help="Research tracker store path")
+    prepare = subparsers.add_parser("prepare-observation", help="Coordinate market/external evidence readiness without running review")
+    prepare.add_argument("--output-dir", default="artifact", help="Directory for runtime artifacts")
+    prepare.add_argument("--state", default="reviews/thesis-baseline.json", help="Production review-state JSON path")
+    prepare.add_argument("--research-store", default="research/missed-opportunities.json", help="Research tracker store path")
+    prepare.add_argument("--liquidations", default="artifact/liquidations", help="Liquidation collector store root")
     return parser
 
 
@@ -83,6 +89,19 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "missed-opportunity-status":
         import json
         print(json.dumps(missed_opportunity_status(Path(args.path)), indent=2, sort_keys=True))
+        return 0
+    if args.command == "prepare-observation":
+        import json
+        print(json.dumps(
+            prepare_observation(
+                output_dir=Path(args.output_dir),
+                state_path=Path(args.state),
+                research_tracker_path=Path(args.research_store),
+                liquidation_root=Path(args.liquidations),
+            ),
+            indent=2,
+            sort_keys=True,
+        ))
         return 0
     parser.print_help()
     return 0
