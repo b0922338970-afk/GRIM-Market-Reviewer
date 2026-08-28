@@ -413,5 +413,115 @@ class MissedOpportunityTrackerV426Tests(unittest.TestCase):
 
 
 
+
+    def _record_with_complete_outcomes(self) -> dict:
+        record = create_tracker(candidate(timestamp=1_000, price=100), created_at="fixed")
+        update_horizon_outcomes(record, frame(continuous_candles(1_300, 288), latest_closed=87_400))
+        self.assertTrue(all(record["outcomes"][h]["horizon_status"] == "COMPLETE" for h in ("1H", "4H", "12H", "24H")))
+        return record
+
+    def test_complete_horizon_never_downgrades_to_data_gap_v426b2(self) -> None:
+        record = self._record_with_complete_outcomes()
+        before = copy.deepcopy(record["outcomes"]["1H"])
+        update_horizon_outcomes(record, frame([candle(2_500, 101, 99)], latest_closed=4_600), horizons=("1H",))
+        self.assertEqual(record["outcomes"]["1H"], before)
+
+    def test_complete_horizon_never_downgrades_to_pending_v426b2(self) -> None:
+        record = self._record_with_complete_outcomes()
+        before = copy.deepcopy(record["outcomes"]["4H"])
+        update_horizon_outcomes(record, frame(continuous_candles(1_300, 4), latest_closed=2_200), horizons=("4H",))
+        self.assertEqual(record["outcomes"]["4H"], before)
+
+    def test_complete_shallow_history_preserves_mfe_mae_v426b2(self) -> None:
+        record = self._record_with_complete_outcomes()
+        before = copy.deepcopy(record["outcomes"])
+        update_horizon_outcomes(record, frame(continuous_candles(20_000, 3), latest_closed=20_600))
+        self.assertEqual(record["outcomes"], before)
+
+    def test_complete_deep_history_is_idempotent_v426b2(self) -> None:
+        record = self._record_with_complete_outcomes()
+        before = copy.deepcopy(record["outcomes"])
+        update_horizon_outcomes(record, frame(continuous_candles(1_300, 288, high=150, low=50), latest_closed=87_400))
+        self.assertEqual(record["outcomes"], before)
+
+    def test_data_gap_recovered_history_can_complete_v426b2(self) -> None:
+        record = create_tracker(candidate(timestamp=1_000, price=100), created_at="fixed")
+        update_horizon_outcomes(record, frame([candle(1_300, 101, 99)], latest_closed=4_600), horizons=("1H",))
+        self.assertEqual(record["outcomes"]["1H"]["horizon_status"], "DATA_GAP")
+        update_horizon_outcomes(record, frame(continuous_candles(1_300, 12), latest_closed=4_600), horizons=("1H",))
+        self.assertEqual(record["outcomes"]["1H"]["horizon_status"], "COMPLETE")
+
+    def test_pending_horizon_reached_full_history_can_complete_v426b2(self) -> None:
+        record = create_tracker(candidate(timestamp=1_000, price=100), created_at="fixed")
+        self.assertEqual(record["outcomes"]["1H"]["horizon_status"], "PENDING")
+        update_horizon_outcomes(record, frame(continuous_candles(1_300, 12), latest_closed=4_600), horizons=("1H",))
+        self.assertEqual(record["outcomes"]["1H"]["horizon_status"], "COMPLETE")
+
+    def test_completed_provenance_preserved_v426b2(self) -> None:
+        record = self._record_with_complete_outcomes()
+        before = {h: copy.deepcopy(record["outcomes"][h]) for h in ("1H", "4H", "12H", "24H")}
+        update_horizon_outcomes(record, frame(continuous_candles(20_000, 3), latest_closed=20_600))
+        for horizon, outcome in before.items():
+            self.assertEqual(record["outcomes"][horizon], outcome)
+            self.assertEqual(record["outcomes"][horizon]["outcome_source"], "historical_outcome_recovery")
+
+    def test_decision_snapshots_unaffected_by_outcome_update_v426b2(self) -> None:
+        record = self._record_with_complete_outcomes()
+        append_snapshot(record, candidate(observation_number=51, timestamp=5_000, price=98), updated_at="fixed")
+        snapshots_before = copy.deepcopy(record["snapshots"])
+        update_horizon_outcomes(record, frame(continuous_candles(20_000, 3), latest_closed=20_600))
+        self.assertEqual(record["snapshots"], snapshots_before)
+
+    def test_lifecycle_metadata_unaffected_by_complete_skip_v426b2(self) -> None:
+        record = self._record_with_complete_outcomes()
+        record["status"] = "DETERIORATING"
+        record["episode_status"] = "OPEN"
+        record["converted_to_production"] = False
+        before = {key: record.get(key) for key in ("status", "episode_status", "terminal_reason", "converted_to_production")}
+        update_horizon_outcomes(record, frame(continuous_candles(20_000, 3), latest_closed=20_600))
+        self.assertEqual({key: record.get(key) for key in before}, before)
+
+    def test_51_snapshot_remains_present_exactly_once_v426b2(self) -> None:
+        record = self._record_with_complete_outcomes()
+        c51 = candidate(observation_number=51, timestamp=5_000, price=98)
+        append_snapshot(record, c51, updated_at="fixed")
+        append_snapshot(record, c51, updated_at="fixed")
+        self.assertEqual(sum(1 for item in record["snapshots"] if item["observation_number"] == 51), 1)
+
+    def test_50_complete_outcomes_survive_51_shallow_fetch_v426b2(self) -> None:
+        record = self._record_with_complete_outcomes()
+        before = copy.deepcopy(record["outcomes"])
+        append_snapshot(record, candidate(observation_number=51, timestamp=5_000, price=98), updated_at="fixed")
+        update_horizon_outcomes(record, frame(continuous_candles(20_000, 3), latest_closed=20_600))
+        self.assertEqual(record["outcomes"], before)
+
+    def test_repeat_51_style_live_update_does_not_corrupt_outcomes_v426b2(self) -> None:
+        record = self._record_with_complete_outcomes()
+        append_snapshot(record, candidate(observation_number=51, timestamp=5_000, price=98), updated_at="fixed")
+        before = copy.deepcopy(record["outcomes"])
+        for _ in range(2):
+            append_snapshot(record, candidate(observation_number=51, timestamp=5_000, price=98), updated_at="fixed")
+            update_horizon_outcomes(record, frame(continuous_candles(20_000, 3), latest_closed=20_600))
+        self.assertEqual(record["outcomes"], before)
+        self.assertEqual(sum(1 for item in record["snapshots"] if item["observation_number"] == 51), 1)
+
+    def test_restart_reload_preserves_complete_v426b2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "research" / "missed-opportunities.json"
+            store = empty_store("fixed")
+            record = self._record_with_complete_outcomes()
+            store["records"].append(record)
+            persist_tracker_store(path, store)
+            loaded = load_tracker_store(path)["records"][0]
+            self.assertTrue(all(loaded["outcomes"][h]["horizon_status"] == "COMPLETE" for h in ("1H", "4H", "12H", "24H")))
+
+    def test_production_state_file_unaffected_by_outcome_update_v426b2(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            review_state = Path(tmp) / "reviews" / "thesis-baseline.json"
+            review_state.parent.mkdir()
+            review_state.write_text('{"production":"unchanged"}', encoding="utf-8")
+            record = self._record_with_complete_outcomes()
+            update_horizon_outcomes(record, frame(continuous_candles(20_000, 3), latest_closed=20_600))
+            self.assertEqual(review_state.read_text(encoding="utf-8"), '{"production":"unchanged"}')
 if __name__ == "__main__":
     unittest.main()

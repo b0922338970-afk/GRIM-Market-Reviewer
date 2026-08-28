@@ -260,6 +260,9 @@ def terminalize_tracker(record: dict[str, Any], reason: str) -> dict[str, Any]:
 
 def update_horizon_outcomes(record: dict[str, Any], frame: MarketDataFrame, horizons: tuple[str, ...] = ("1H", "4H", "12H", "24H")) -> dict[str, Any]:
     for horizon in horizons:
+        existing = (record.get("outcomes") or {}).get(horizon)
+        if isinstance(existing, dict) and existing.get("horizon_status") == "COMPLETE":
+            continue
         record["outcomes"][horizon] = calculate_horizon(
             direction=record["direction"],
             origin_timestamp=int(record["origin_snapshot_timestamp"]),
