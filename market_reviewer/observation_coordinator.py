@@ -10,6 +10,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import time
 from pathlib import Path
 from typing import Any, Callable
 
@@ -18,7 +19,7 @@ from .external_evidence_providers import run_external_evidence_fetch
 from .liquidation_collector import CoverageStore, LiquidationEventStore, aggregate_liquidations
 from .missed_opportunity import DEFAULT_TRACKER_PATH, load_tracker_store, pending_outcome_required_start_by_symbol
 from .model import ACTIVE_SYMBOLS
-from .persistence import load_review_state
+from .persistence import atomic_write_json, load_review_state
 
 
 READY = "READY"
@@ -40,6 +41,7 @@ REQUIRED_EXTERNAL_FIELDS = (
 
 MarketFetcher = Callable[[Path], Path]
 ExternalFetcher = Callable[[Path], Path]
+Clock = Callable[[], int]
 
 
 def prepare_observation(
@@ -50,6 +52,7 @@ def prepare_observation(
     liquidation_root: Path = Path("artifact/liquidations"),
     market_fetcher: MarketFetcher | None = None,
     external_fetcher: ExternalFetcher | None = None,
+    clock: Clock | None = None,
     symbols: tuple[str, ...] = ACTIVE_SYMBOLS,
 ) -> dict[str, Any]:
     """Fetch and align market/external/liquidation evidence for an observation.
@@ -65,26 +68,59 @@ def prepare_observation(
     previous_state, loaded_from = load_review_state(state_path)
     research_required_starts = _research_required_starts(research_tracker_path)
 
+    now = clock or (lambda: int(time.time()))
     market_fetch = market_fetcher or _production_market_fetcher(state_path, research_tracker_path)
     external_fetch = external_fetcher or _external_evidence_fetcher()
 
-    market_fetch_count = 1
-    external_fetch_count = 1
+    resume_path = _resume_state_path(output_dir)
+    resume = _load_waiting_resume(resume_path, before_production_hash, before_research_hash)
+    if resume and resume.get("status") == "BASELINE_CHANGED":
+        return _baseline_changed_result(
+            resume=resume,
+            state_path=state_path,
+            research_tracker_path=research_tracker_path,
+            before_production_hash=before_production_hash,
+            before_research_hash=before_research_hash,
+            loaded_from=loaded_from,
+            symbols=symbols,
+        )
+
+    market_fetch_count = int((resume or {}).get("market_fetch_count") or 0) + 1
+    external_fetch_count = int((resume or {}).get("external_fetch_count") or 0)
     market_path = market_fetch(output_dir)
     market_snapshot = _read_json(market_path)
-    external_path = external_fetch(output_dir)
-    external_snapshot = _read_json(external_path)
-    external_freeze = _external_freeze(external_snapshot, symbols)
+    if resume:
+        external_path = Path(str(resume["external_path"]))
+        external_freeze = copy.deepcopy(resume["external_freeze"])
+    else:
+        external_fetch_count = 1
+        external_path = external_fetch(output_dir)
+        external_snapshot = _read_json(external_path)
+        external_freeze = _external_freeze(external_snapshot, symbols)
     required_external_time = external_freeze["required_external_time"]
 
     selected = _select_market_checkpoint(market_snapshot, required_external_time, symbols, previous_state)
     first_initial_checkpoint = selected.get("initial_checkpoint")
     if selected["status"] != READY:
-        market_fetch_count += 1
-        market_path = market_fetch(output_dir)
-        market_snapshot = _read_json(market_path)
-        selected = _select_market_checkpoint(market_snapshot, required_external_time, symbols, previous_state)
-        selected["initial_checkpoint"] = first_initial_checkpoint
+        if selected["status"] == WAITING_FOR_M5_CLOSE and int(now()) < int(selected["next_required_checkpoint"]):
+            _persist_waiting_resume(
+                resume_path,
+                status=WAITING_FOR_M5_CLOSE,
+                reason=WAITING_FOR_M5_CLOSE,
+                external_path=external_path,
+                external_freeze=external_freeze,
+                selected=selected,
+                before_production_hash=before_production_hash,
+                before_research_hash=before_research_hash,
+                market_fetch_count=market_fetch_count,
+                external_fetch_count=external_fetch_count,
+            )
+        else:
+            market_fetch_count += 1
+            market_path = market_fetch(output_dir)
+            market_snapshot = _read_json(market_path)
+            selected = _select_market_checkpoint(market_snapshot, required_external_time, symbols, previous_state)
+            selected["initial_checkpoint"] = first_initial_checkpoint
 
     if selected["status"] != READY:
         return _result(
@@ -109,6 +145,7 @@ def prepare_observation(
         )
 
     checkpoint = int(selected["canonical_checkpoint"])
+    _clear_resume_state(resume_path)
     external_ready = _external_temporal_ready(external_freeze, checkpoint)
     liquidation = _liquidation_readiness(liquidation_root, checkpoint, symbols)
     final_status = READY if external_ready["ready"] and liquidation["ready"] else BLOCKED
@@ -160,6 +197,109 @@ def _external_evidence_fetcher() -> ExternalFetcher:
 
     return fetch
 
+
+def _resume_state_path(output_dir: Path) -> Path:
+    return output_dir / "observation-preparation-resume.json"
+
+
+def _load_waiting_resume(path: Path, production_hash: str | None, research_hash: str | None) -> dict[str, Any] | None:
+    if not path.exists():
+        return None
+    resume = _read_json(path)
+    if resume.get("status") != WAITING_FOR_M5_CLOSE:
+        return None
+    if resume.get("starting_production_hash") != production_hash or resume.get("starting_research_hash") != research_hash:
+        changed = copy.deepcopy(resume)
+        changed["status"] = "BASELINE_CHANGED"
+        return changed
+    return resume
+
+
+def _persist_waiting_resume(
+    path: Path,
+    *,
+    status: str,
+    reason: str,
+    external_path: Path,
+    external_freeze: dict[str, Any],
+    selected: dict[str, Any],
+    before_production_hash: str | None,
+    before_research_hash: str | None,
+    market_fetch_count: int,
+    external_fetch_count: int,
+) -> None:
+    atomic_write_json(
+        path,
+        {
+            "schema": "observation-preparation-resume.v1",
+            "status": status,
+            "reason": reason,
+            "cycle_identity": hashlib.sha256(
+                json.dumps(
+                    {
+                        "production": before_production_hash,
+                        "research": before_research_hash,
+                        "required_external_time": external_freeze.get("required_external_time"),
+                        "target_checkpoint": selected.get("next_required_checkpoint"),
+                    },
+                    sort_keys=True,
+                ).encode("utf-8")
+            ).hexdigest(),
+            "external_path": str(external_path),
+            "external_freeze": external_freeze,
+            "required_external_time": external_freeze.get("required_external_time"),
+            "target_checkpoint": selected.get("next_required_checkpoint"),
+            "selected": selected,
+            "starting_production_hash": before_production_hash,
+            "starting_research_hash": before_research_hash,
+            "market_fetch_count": market_fetch_count,
+            "external_fetch_count": external_fetch_count,
+        },
+    )
+
+
+def _clear_resume_state(path: Path) -> None:
+    if path.exists():
+        path.unlink()
+
+
+def _baseline_changed_result(
+    *,
+    resume: dict[str, Any],
+    state_path: Path,
+    research_tracker_path: Path,
+    before_production_hash: str | None,
+    before_research_hash: str | None,
+    loaded_from: str,
+    symbols: tuple[str, ...],
+) -> dict[str, Any]:
+    return {
+        "schema": "observation-preparation.v1",
+        "status": BLOCKED,
+        "reason": "PREPARATION_BASELINE_CHANGED",
+        "final": BLOCKED,
+        "canonical_checkpoint": None,
+        "required_external_time": resume.get("required_external_time"),
+        "next_required_checkpoint": resume.get("target_checkpoint"),
+        "market_refresh_count": max(0, int(resume.get("market_fetch_count") or 0) - 1),
+        "market_fetch_count": int(resume.get("market_fetch_count") or 0),
+        "external_fetch_count": int(resume.get("external_fetch_count") or 0),
+        "state_loaded_from": loaded_from,
+        "previous_review_timestamp": {symbol: 0 for symbol in symbols},
+        "market_replay_ready": "NO",
+        "external_ready": "NO",
+        "liquidation_ready": "NO",
+        "research_store_ready": "YES" if before_research_hash is not None else "NO",
+        "semantic_classifiers_ready": "NO",
+        "state_immutability": {
+            "production_before_sha256": before_production_hash,
+            "production_after_sha256": _sha256_or_none(state_path),
+            "production_unchanged": before_production_hash == _sha256_or_none(state_path),
+            "research_before_sha256": before_research_hash,
+            "research_after_sha256": _sha256_or_none(research_tracker_path),
+            "research_unchanged": before_research_hash == _sha256_or_none(research_tracker_path),
+        },
+    }
 
 def _result(
     *,

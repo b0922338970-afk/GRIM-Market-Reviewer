@@ -161,6 +161,203 @@ class ObservationCoordinatorV427Tests(unittest.TestCase):
         )
         return result, market, external, state, research
 
+
+    def run_prepare_in_root(
+        self,
+        root: Path,
+        market_artifacts: list[dict],
+        external_time: int,
+        *,
+        clock_value: int,
+        state_timestamp: int = 1_787_934_000,
+        external: Fetcher | None = None,
+        initialize: bool = True,
+    ) -> tuple[dict, Fetcher, Fetcher, Path, Path]:
+        state = root / "reviews" / "thesis-baseline.json"
+        research = root / "research" / "missed-opportunities.json"
+        if initialize:
+            write_state(state, state_timestamp)
+            store = backfill_46_49("fixed")
+            for record in store["records"]:
+                for outcome in record["outcomes"].values():
+                    outcome["horizon_status"] = "COMPLETE"
+            persist_tracker_store(research, store)
+            complete_liquidation(root / "artifact" / "liquidations", external_time - 7200, external_time + 7200)
+        market = Fetcher(market_artifacts, "market-data-v1.json")
+        external = external or Fetcher([external_artifact(external_time)], "external-market-evidence-v1.json")
+        result = prepare_observation(
+            output_dir=root / "artifact",
+            state_path=state,
+            research_tracker_path=research,
+            liquidation_root=root / "artifact" / "liquidations",
+            market_fetcher=market,
+            external_fetcher=external,
+            clock=lambda: clock_value,
+        )
+        return result, market, external, state, research
+
+    def test_v427b_target_not_closed_skips_second_market_fetch(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        result, market, external, state, research = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_200)],
+            1_787_974_604,
+            clock_value=1_787_974_799,
+        )
+        self.assertEqual(result["status"], WAITING_FOR_M5_CLOSE)
+        self.assertEqual(result["market_fetch_count"], 1)
+        self.assertEqual(result["external_fetch_count"], 1)
+        self.assertEqual(market.calls, 1)
+        self.assertEqual(external.calls, 1)
+        self.assertTrue((root / "artifact" / "observation-preparation-resume.json").exists())
+        self.assertTrue(result["state_immutability"]["production_unchanged"])
+        self.assertTrue(result["state_immutability"]["research_unchanged"])
+        self.assertEqual(hashlib.sha256(state.read_bytes()).hexdigest(), result["state_immutability"]["production_before_sha256"])
+        self.assertEqual(hashlib.sha256(research.read_bytes()).hexdigest(), result["state_immutability"]["research_before_sha256"])
+
+    def test_v427b_resume_ready_total_market_two_external_one(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        first, _, external, _, _ = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_200)],
+            1_787_974_604,
+            clock_value=1_787_974_799,
+        )
+        self.assertEqual(first["status"], WAITING_FOR_M5_CLOSE)
+        second, market, external, _, _ = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_500)],
+            1_787_974_604,
+            clock_value=1_787_974_800,
+            external=external,
+            initialize=False,
+        )
+        self.assertEqual(second["status"], READY)
+        self.assertEqual(second["canonical_checkpoint"], 1_787_974_800)
+        self.assertEqual(second["market_fetch_count"], 2)
+        self.assertEqual(second["external_fetch_count"], 1)
+        self.assertEqual(market.calls, 1)
+        self.assertEqual(external.calls, 1)
+        self.assertFalse((root / "artifact" / "observation-preparation-resume.json").exists())
+
+    def test_v427b_resume_reuses_frozen_external(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        first, _, external, _, _ = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_200)],
+            1_787_974_604,
+            clock_value=1_787_974_799,
+        )
+        first_required = first["required_external_time"]
+        second, _, external, _, _ = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_500)],
+            1_787_999_999,
+            clock_value=1_787_974_800,
+            external=external,
+            initialize=False,
+        )
+        self.assertEqual(second["status"], READY)
+        self.assertEqual(second["required_external_time"], first_required)
+        self.assertEqual(external.calls, 1)
+
+    def test_v427b_resume_after_baseline_changed_rejects_stale_cycle(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        first, _, external, state, _ = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_200)],
+            1_787_974_604,
+            clock_value=1_787_974_799,
+        )
+        self.assertEqual(first["status"], WAITING_FOR_M5_CLOSE)
+        write_state(state, timestamp=1_787_934_300)
+        second, market, external, _, _ = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_500)],
+            1_787_974_604,
+            clock_value=1_787_974_800,
+            external=external,
+            initialize=False,
+        )
+        self.assertEqual(second["status"], "BLOCKED")
+        self.assertEqual(second["reason"], "PREPARATION_BASELINE_CHANGED")
+        self.assertEqual(market.calls, 0)
+        self.assertEqual(external.calls, 1)
+
+    def test_v427b_already_aligned_total_market_one(self) -> None:
+        result, market, external, _, _ = self.run_prepare([market_snapshot(1_787_974_800)], 1_787_974_604)
+        self.assertEqual(result["status"], READY)
+        self.assertEqual(result["market_fetch_count"], 1)
+        self.assertEqual(result["external_fetch_count"], 1)
+        self.assertEqual(market.calls, 1)
+        self.assertEqual(external.calls, 1)
+
+    def test_v427b_target_already_closed_race_total_market_two(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        result, market, external, _, _ = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_200), market_snapshot(1_787_974_500)],
+            1_787_974_604,
+            clock_value=1_787_974_800,
+        )
+        self.assertEqual(result["status"], READY)
+        self.assertEqual(result["canonical_checkpoint"], 1_787_974_800)
+        self.assertEqual(result["market_fetch_count"], 2)
+        self.assertEqual(result["external_fetch_count"], 1)
+        self.assertEqual(market.calls, 2)
+        self.assertEqual(external.calls, 1)
+
+    def test_v427b_no_checkpoint_backward_shift_on_resume(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        first, _, external, _, _ = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_200)],
+            1_787_974_604,
+            clock_value=1_787_974_799,
+        )
+        second, _, _, _, _ = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_500)],
+            1_787_974_604,
+            clock_value=1_787_974_800,
+            external=external,
+            initialize=False,
+        )
+        self.assertGreaterEqual(second["canonical_checkpoint"], first["initial_checkpoint"])
+        self.assertEqual(second["next_required_checkpoint"], 1_787_974_800)
+
+    def test_v427b_53_fixture_reproduces_wait_then_ready_budget(self) -> None:
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        root = Path(directory.name)
+        waiting, _, external, _, _ = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_200)],
+            1_787_974_604,
+            clock_value=1_787_974_799,
+        )
+        ready, _, _, _, _ = self.run_prepare_in_root(
+            root,
+            [market_snapshot(1_787_974_500)],
+            1_787_974_604,
+            clock_value=1_787_974_800,
+            external=external,
+            initialize=False,
+        )
+        self.assertEqual((waiting["market_fetch_count"], waiting["external_fetch_count"], waiting["status"]), (1, 1, WAITING_FOR_M5_CLOSE))
+        self.assertEqual((ready["market_fetch_count"], ready["external_fetch_count"], ready["status"]), (2, 1, READY))
     def test_external_later_than_checkpoint_selects_next_m5(self) -> None:
         result, market, _, _, _ = self.run_prepare([market_snapshot(1_787_934_600), market_snapshot(1_787_934_900)], 1_787_935_044)
         self.assertEqual(result["status"], READY)
