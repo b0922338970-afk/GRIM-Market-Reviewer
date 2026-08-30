@@ -66,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
     runner_status.add_argument("--state", default="reviews/thesis-baseline.json", help="Production review-state JSON path")
     runner_status.add_argument("--research-store", default="research/missed-opportunities.json", help="Research tracker store path")
     runner_status.add_argument("--journal", default=None, help="Observation commit journal path")
+    runner_status.add_argument("--production-head", default=None, help="Production observation head path")
     return parser
 
 
@@ -136,7 +137,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0 if result.get("status") != "RUNNER_ALREADY_ACTIVE" else 2
     if args.command == "observation-runner-status":
         import json
-        print(json.dumps(observation_runner_status(Path(args.path), state_path=Path(args.state), research_tracker_path=Path(args.research_store), journal_path=Path(args.journal) if args.journal else None), indent=2, sort_keys=True))
+        print(json.dumps(observation_runner_status(Path(args.path), state_path=Path(args.state), research_tracker_path=Path(args.research_store), journal_path=Path(args.journal) if args.journal else None, production_head_path=Path(args.production_head) if args.production_head else None), indent=2, sort_keys=True))
         return 0
     parser.print_help()
     return 0

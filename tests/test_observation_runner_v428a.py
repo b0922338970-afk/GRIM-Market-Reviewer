@@ -13,7 +13,11 @@ os._walk_symlinks_as_files = False
 from market_reviewer.observation_coordinator import READY
 from market_reviewer.observation_runner import (
     BLOCKED_INVALID_OBSERVATION_STATE,
+    BLOCKED_RECOVERY_EVIDENCE_MISSING,
     BLOCKED_RECOVERY_GAP,
+    BLOCKED_RECOVERY_METADATA_MISSING,
+    BLOCKED_RESEARCH_IDENTITY_MISMATCH,
+    BLOCKED_STALE_PREPARED_BASELINE,
     PENDING_RESEARCH_RECOVERY,
     RunnerConfig,
     latest_production_observation,
@@ -32,6 +36,18 @@ def sha(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def write_head(path: Path, observation: int, state_hash: str, checkpoint: int = 5400) -> None:
+    write_json(path, {
+        "schema": "production-observation-head.v1",
+        "observation_number": observation,
+        "canonical_checkpoint": checkpoint,
+        "production_previous_review_timestamp": {"BTC": checkpoint, "ETH": checkpoint},
+        "production_state_sha256": state_hash,
+        "cycle_id": f"cycle-{observation}",
+        "committed_at": checkpoint,
+    })
+
+
 def production_state(timestamp: int = 5300) -> dict:
     return {
         "persistence_version": 2,
@@ -43,12 +59,13 @@ def production_state(timestamp: int = 5300) -> dict:
     }
 
 
-def research_store(latest: int = 53) -> dict:
+def research_store(latest: int = 53, timestamp: int | None = None) -> dict:
+    snapshot_timestamp = timestamp if timestamp is not None else (5300 if latest == 53 else latest * 100)
     return {
         "schema": "missed-opportunity-tracker.v1",
         "records": [
-            {"tracker_id": "BTC", "symbol": "BTC", "direction": "LONG", "status": "DETERIORATING", "episode_status": "OPEN", "snapshots": [{"observation_number": latest}], "outcomes": {}},
-            {"tracker_id": "ETH", "symbol": "ETH", "direction": "LONG", "status": "DETERIORATING", "episode_status": "OPEN", "snapshots": [{"observation_number": latest}], "outcomes": {}},
+            {"tracker_id": "BTC", "symbol": "BTC", "direction": "LONG", "status": "DETERIORATING", "episode_status": "OPEN", "snapshots": [{"observation_number": latest, "snapshot_timestamp": snapshot_timestamp}], "outcomes": {}},
+            {"tracker_id": "ETH", "symbol": "ETH", "direction": "LONG", "status": "DETERIORATING", "episode_status": "OPEN", "snapshots": [{"observation_number": latest, "snapshot_timestamp": snapshot_timestamp}], "outcomes": {}},
         ],
     }
 
@@ -58,7 +75,7 @@ def append_research(path: Path, observation_number: int) -> None:
     for record in data.get("records", []):
         existing = {item.get("observation_number") for item in record.get("snapshots", [])}
         if observation_number not in existing:
-            record.setdefault("snapshots", []).append({"observation_number": observation_number, "snapshot_timestamp": observation_number})
+            record.setdefault("snapshots", []).append({"observation_number": observation_number, "snapshot_timestamp": observation_number * 100})
     write_json(path, data)
 
 
@@ -140,6 +157,7 @@ class V428aSplitRecoveryTests(unittest.TestCase):
             tx["production_hash"] = production_hash
         if payload is not None:
             tx["recovery_payload"] = payload
+        tx["research_identity"] = {"canonical_checkpoint": 5400, "symbols": {"BTC": {"tracker_id": "BTC"}, "ETH": {"tracker_id": "ETH"}}}
         write_json(cfg.commit_journal_path, {"schema": "observation-commit-journal.v1", "transactions": [tx]})
 
     def payload(self, cfg: RunnerConfig, observation: int = 54) -> dict:
@@ -180,7 +198,8 @@ class V428aSplitRecoveryTests(unittest.TestCase):
         cfg = self.config(root, max_cycles=0)
         old_hash = sha(cfg.state_path)
         write_json(cfg.state_path, production_state(timestamp=5400))
-        self.write_tx(cfg, status="PRODUCTION_COMMITTING", starting_hash=old_hash)
+        write_head(cfg.production_head_path, 54, sha(cfg.state_path))
+        self.write_tx(cfg, status="PRODUCTION_COMMITTING", starting_hash=old_hash, payload=self.payload(cfg))
         research_calls: list[int] = []
         with mock.patch("market_reviewer.observation_runner._recovery_payload_from_transaction", return_value=self.payload(cfg)):
             result = run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, []), research_executor=self.research(cfg, research_calls), clock=Clock(1000))
@@ -192,6 +211,7 @@ class V428aSplitRecoveryTests(unittest.TestCase):
         root = self.root()
         cfg = self.config(root, max_cycles=0)
         write_json(cfg.state_path, production_state(timestamp=5400))
+        write_head(cfg.production_head_path, 54, sha(cfg.state_path))
         self.write_tx(cfg, status="RESEARCH_PENDING", production_hash=sha(cfg.state_path), payload=self.payload(cfg))
         prod_calls: list[int] = []
         research_calls: list[int] = []
@@ -203,6 +223,7 @@ class V428aSplitRecoveryTests(unittest.TestCase):
         root = self.root()
         cfg = self.config(root, max_cycles=1)
         write_json(cfg.state_path, production_state(timestamp=5400))
+        write_head(cfg.production_head_path, 54, sha(cfg.state_path))
         self.write_tx(cfg, status="RESEARCH_PENDING", production_hash=sha(cfg.state_path), payload=self.payload(cfg))
         prod_calls: list[int] = []
         result = run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, prod_calls), research_executor=self.research(cfg, [], fail=True), clock=Clock(1000))
@@ -214,6 +235,7 @@ class V428aSplitRecoveryTests(unittest.TestCase):
         cfg = self.config(root, max_cycles=0)
         append_research(cfg.research_tracker_path, 54)
         write_json(cfg.state_path, production_state(timestamp=5400))
+        write_head(cfg.production_head_path, 54, sha(cfg.state_path))
         self.write_tx(cfg, status="RESEARCH_PENDING", production_hash=sha(cfg.state_path), payload=self.payload(cfg))
         research_calls: list[int] = []
         run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, []), research_executor=self.research(cfg, research_calls), clock=Clock(1000))
@@ -247,6 +269,7 @@ class V428aSplitRecoveryTests(unittest.TestCase):
         root = self.root()
         cfg = self.config(root)
         write_json(cfg.state_path, production_state(timestamp=5400))
+        write_head(cfg.production_head_path, 54, sha(cfg.state_path))
         self.write_tx(cfg, status="RESEARCH_PENDING", production_hash=sha(cfg.state_path), payload=self.payload(cfg))
         status = observation_runner_status(cfg.runner_state_path, state_path=cfg.state_path, research_tracker_path=cfg.research_tracker_path, journal_path=cfg.commit_journal_path, clock=Clock(1000))
         self.assertTrue(status["pending_research_recovery"])
@@ -262,6 +285,111 @@ class V428aSplitRecoveryTests(unittest.TestCase):
         journal = json.loads(cfg.commit_journal_path.read_text(encoding="utf-8"))
         self.assertEqual(latest_production_observation(journal, cfg.research_tracker_path), 54)
         self.assertEqual(next_observation_number(cfg.research_tracker_path, cfg.commit_journal_path), 55)
+
+
+    def test_production_head_bootstrap_from_aligned_53_fixture(self) -> None:
+        root = self.root()
+        cfg = self.config(root, max_cycles=0)
+        run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, []), research_executor=self.research(cfg, []), clock=Clock(1000))
+        head = json.loads(cfg.production_head_path.read_text(encoding="utf-8"))
+        self.assertEqual(head["schema"], "production-observation-head.v1")
+        self.assertEqual(head["observation_number"], 53)
+
+    def test_no_journal_production_ahead_blocks_without_rerun(self) -> None:
+        root = self.root()
+        cfg = self.config(root, max_cycles=1)
+        write_json(cfg.state_path, production_state(timestamp=5400))
+        write_head(cfg.production_head_path, 54, sha(cfg.state_path))
+        prod_calls: list[int] = []
+        result = run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, prod_calls), research_executor=self.research(cfg, []), clock=Clock(1000))
+        self.assertEqual(result["status"], BLOCKED_RECOVERY_METADATA_MISSING)
+        self.assertEqual(prod_calls, [])
+
+    def test_wrong_research_checkpoint_rejected(self) -> None:
+        root = self.root()
+        cfg = self.config(root, max_cycles=0)
+        append_research(cfg.research_tracker_path, 54)
+        data = json.loads(cfg.research_tracker_path.read_text(encoding="utf-8"))
+        for record in data["records"]:
+            record["snapshots"][-1]["snapshot_timestamp"] = 9999
+        write_json(cfg.research_tracker_path, data)
+        write_json(cfg.state_path, production_state(timestamp=5400))
+        write_head(cfg.production_head_path, 54, sha(cfg.state_path))
+        self.write_tx(cfg, status="RESEARCH_PENDING", production_hash=sha(cfg.state_path), payload=self.payload(cfg))
+        result = run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, []), research_executor=self.research(cfg, []), clock=Clock(1000))
+        self.assertEqual(result["status"], BLOCKED_RESEARCH_IDENTITY_MISMATCH)
+
+    def test_wrong_research_tracker_identity_rejected(self) -> None:
+        root = self.root()
+        cfg = self.config(root, max_cycles=0)
+        append_research(cfg.research_tracker_path, 54)
+        data = json.loads(cfg.research_tracker_path.read_text(encoding="utf-8"))
+        for record in data["records"]:
+            record["snapshots"][-1]["snapshot_timestamp"] = 5400
+        data["records"][0]["tracker_id"] = "WRONG-BTC"
+        write_json(cfg.research_tracker_path, data)
+        write_json(cfg.state_path, production_state(timestamp=5400))
+        write_head(cfg.production_head_path, 54, sha(cfg.state_path))
+        self.write_tx(cfg, status="RESEARCH_PENDING", production_hash=sha(cfg.state_path), payload=self.payload(cfg))
+        result = run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, []), research_executor=self.research(cfg, []), clock=Clock(1000))
+        self.assertEqual(result["status"], BLOCKED_RESEARCH_IDENTITY_MISMATCH)
+
+    def test_stale_prepared_production_hash_drift_rejected_without_head(self) -> None:
+        root = self.root()
+        cfg = self.config(root, max_cycles=0)
+        old_hash = sha(cfg.state_path)
+        self.write_tx(cfg, status="PREPARED", starting_hash=old_hash)
+        write_json(cfg.state_path, production_state(timestamp=5400))
+        result = run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, []), research_executor=self.research(cfg, []), clock=Clock(1000))
+        self.assertEqual(result["status"], BLOCKED_RECOVERY_METADATA_MISSING)
+
+    def test_stale_prepared_research_hash_drift_rejected(self) -> None:
+        root = self.root()
+        cfg = self.config(root, max_cycles=0)
+        self.write_tx(cfg, status="PREPARED")
+        append_research(cfg.research_tracker_path, 52)
+        result = run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, []), research_executor=self.research(cfg, []), clock=Clock(1000))
+        self.assertEqual(result["status"], BLOCKED_STALE_PREPARED_BASELINE)
+
+    def test_unchanged_prepared_safely_abandoned(self) -> None:
+        root = self.root()
+        cfg = self.config(root, max_cycles=0)
+        self.write_tx(cfg, status="PREPARED")
+        result = run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, []), research_executor=self.research(cfg, []), clock=Clock(1000))
+        self.assertEqual(result["recovered_pending_research"]["status"], "PREPARED_NOT_COMMITTED")
+
+    def test_head_journal_mismatch_blocks(self) -> None:
+        root = self.root()
+        cfg = self.config(root, max_cycles=0)
+        write_head(cfg.production_head_path, 53, sha(cfg.state_path), checkpoint=5300)
+        self.write_tx(cfg, status="COMPLETE", observation=54, production_hash=sha(cfg.state_path))
+        result = run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, []), research_executor=self.research(cfg, []), clock=Clock(1000))
+        self.assertEqual(result["status"], BLOCKED_RECOVERY_GAP)
+
+    def test_head_55_research_53_recovery_gap_blocks(self) -> None:
+        root = self.root()
+        cfg = self.config(root, max_cycles=0)
+        write_head(cfg.production_head_path, 55, sha(cfg.state_path), checkpoint=5500)
+        result = run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, []), research_executor=self.research(cfg, []), clock=Clock(1000))
+        self.assertEqual(result["status"], BLOCKED_RECOVERY_GAP)
+
+    def test_missing_recovery_evidence_blocks(self) -> None:
+        root = self.root()
+        cfg = self.config(root, max_cycles=0)
+        write_json(cfg.state_path, production_state(timestamp=5400))
+        write_head(cfg.production_head_path, 54, sha(cfg.state_path))
+        self.write_tx(cfg, status="RESEARCH_PENDING", production_hash=sha(cfg.state_path), payload=None)
+        result = run_observation_loop(cfg, coordinator=lambda **_: ready(root), production_executor=self.production(cfg, []), research_executor=self.research(cfg, []), clock=Clock(1000))
+        self.assertEqual(result["status"], BLOCKED_RECOVERY_EVIDENCE_MISSING)
+
+    def test_status_exposes_production_head(self) -> None:
+        root = self.root()
+        cfg = self.config(root)
+        write_head(cfg.production_head_path, 53, sha(cfg.state_path), checkpoint=5300)
+        status = observation_runner_status(cfg.runner_state_path, state_path=cfg.state_path, research_tracker_path=cfg.research_tracker_path, journal_path=cfg.commit_journal_path, production_head_path=cfg.production_head_path, clock=Clock(1000))
+        self.assertEqual(status["production_head_observation"], 53)
+        self.assertEqual(status["production_head_checkpoint"], 5300)
+        self.assertEqual(status["production_head_hash"], sha(cfg.state_path))
 
 
 if __name__ == "__main__":
