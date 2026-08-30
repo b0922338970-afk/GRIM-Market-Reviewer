@@ -16,6 +16,7 @@ from .external_evidence_providers import run_external_evidence_fetch
 from .liquidation_collector import collect_liquidations, liquidation_status
 from .missed_opportunity_live import explicit_backfill_v426, missed_opportunity_status
 from .observation_coordinator import prepare_observation
+from .observation_runner import RunnerConfig, observation_runner_status, run_observation_loop
 from .review_only import run_review_only
 
 
@@ -51,6 +52,17 @@ def build_parser() -> argparse.ArgumentParser:
     prepare.add_argument("--state", default="reviews/thesis-baseline.json", help="Production review-state JSON path")
     prepare.add_argument("--research-store", default="research/missed-opportunities.json", help="Research tracker store path")
     prepare.add_argument("--liquidations", default="artifact/liquidations", help="Liquidation collector store root")
+    runner = subparsers.add_parser("run-observation-loop", help="Run the automatic observation loop")
+    runner.add_argument("--output-dir", default="artifact", help="Directory for runtime artifacts")
+    runner.add_argument("--state", default="reviews/thesis-baseline.json", help="Production review-state JSON path")
+    runner.add_argument("--research-store", default="research/missed-opportunities.json", help="Research tracker store path")
+    runner.add_argument("--liquidations", default="artifact/liquidations", help="Liquidation collector store root")
+    runner.add_argument("--weekday-interval-minutes", type=int, default=60, help="Weekday observation cadence")
+    runner.add_argument("--weekend-interval-minutes", type=int, default=90, help="Weekend observation cadence")
+    runner.add_argument("--max-cycles", type=int, default=None, help="Optional deterministic cycle limit")
+    runner.add_argument("--dry-run", action="store_true", help="Prepare only; never persist a formal Observation")
+    runner_status = subparsers.add_parser("observation-runner-status", help="Show automatic observation runner status")
+    runner_status.add_argument("--path", default="artifact/observation-runner.json", help="Runner state path")
     return parser
 
 
@@ -102,6 +114,26 @@ def main(argv: list[str] | None = None) -> int:
             indent=2,
             sort_keys=True,
         ))
+        return 0
+    if args.command == "run-observation-loop":
+        import json
+        result = run_observation_loop(
+            RunnerConfig(
+                output_dir=Path(args.output_dir),
+                state_path=Path(args.state),
+                research_tracker_path=Path(args.research_store),
+                liquidation_root=Path(args.liquidations),
+                weekday_interval_minutes=args.weekday_interval_minutes,
+                weekend_interval_minutes=args.weekend_interval_minutes,
+                max_cycles=args.max_cycles,
+                dry_run=args.dry_run,
+            )
+        )
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 0 if result.get("status") != "RUNNER_ALREADY_ACTIVE" else 2
+    if args.command == "observation-runner-status":
+        import json
+        print(json.dumps(observation_runner_status(Path(args.path)), indent=2, sort_keys=True))
         return 0
     parser.print_help()
     return 0
