@@ -27,8 +27,12 @@ from .pipeline import load_snapshot, review_snapshot
 
 
 RUNNER_SCHEMA = "observation-runner.v1"
-RUNNER_ACTIVE_STATUSES = {"STARTING", "IDLE", "PREPARING", "WAITING_FOR_M5_CLOSE", "REVIEWING", "PERSISTING", "BLOCKED"}
+COMMIT_JOURNAL_SCHEMA = "observation-commit-journal.v1"
+RUNNER_ACTIVE_STATUSES = {"STARTING", "IDLE", "PREPARING", "WAITING_FOR_M5_CLOSE", "REVIEWING", "PERSISTING", "PENDING_RESEARCH_RECOVERY", "BLOCKED"}
 RUNNER_ALREADY_ACTIVE = "RUNNER_ALREADY_ACTIVE"
+PENDING_RESEARCH_RECOVERY = "PENDING_RESEARCH_RECOVERY"
+BLOCKED_INVALID_OBSERVATION_STATE = "BLOCKED_INVALID_OBSERVATION_STATE"
+BLOCKED_RECOVERY_GAP = "BLOCKED_RECOVERY_GAP"
 DEFAULT_WEEKDAY_INTERVAL_MINUTES = 60
 DEFAULT_WEEKEND_INTERVAL_MINUTES = 90
 WAITING_SAFETY_DELAY_SECONDS = 10
@@ -60,6 +64,10 @@ class RunnerConfig:
     def runner_log_path(self) -> Path:
         return self.output_dir / "observation-runner.log"
 
+    @property
+    def commit_journal_path(self) -> Path:
+        return self.output_dir / "observation-commit-journal.json"
+
 
 def run_observation_loop(
     config: RunnerConfig | None = None,
@@ -82,9 +90,12 @@ def run_observation_loop(
 
     summary: dict[str, Any] = {"status": "STARTED", "cycles": [], "runner_state_path": str(cfg.runner_state_path)}
     try:
-        recovered = _resume_pending_research(cfg, research, now)
+        recovered = _reconcile_observation_transactions(cfg, research, now)
         if recovered:
             summary["recovered_pending_research"] = recovered
+            if str(recovered.get("status", "")).startswith("BLOCKED"):
+                summary["status"] = recovered["status"]
+                return summary
         cycles = 0
         while cfg.max_cycles is None or cycles < cfg.max_cycles:
             cycle = run_observation_cycle(
@@ -126,7 +137,24 @@ def run_observation_cycle(
     started_at = now()
     before_production = _sha256_or_none(config.state_path)
     before_research = _sha256_or_none(config.research_tracker_path)
-    observation_number = next_observation_number(config.research_tracker_path)
+    reconciled = _reconcile_observation_transactions(config, research_executor, now)
+    if reconciled and str(reconciled.get("status", "")).startswith("BLOCKED"):
+        cycle = {
+            "cycle_id": cycle_id,
+            "started_at": started_at,
+            "finished_at": now(),
+            "preparation_status": "BLOCKED",
+            "canonical_checkpoint": None,
+            "observation_number": None,
+            "production_result": "NOT_ATTEMPTED",
+            "research_result": "NOT_ATTEMPTED",
+            "blocker": reconciled["status"],
+            "next_scheduled_run": _next_interval_time(now, config),
+        }
+        _update_runner_state(config, now, status="BLOCKED", blocked_cycles_delta=1, last_blocker=reconciled["status"], last_cycle_finished_at=cycle["finished_at"])
+        _append_runner_log(config.runner_log_path, cycle)
+        return cycle
+    observation_number = next_observation_number(config.research_tracker_path, config.commit_journal_path)
 
     _update_runner_state(
         config,
@@ -166,7 +194,7 @@ def run_observation_cycle(
             )
             _update_runner_state(config, now, status="IDLE", last_cycle_finished_at=now(), dry_run=True)
         else:
-            cycle.update(_execute_ready_cycle(config, preparation, observation_number, production_executor, research_executor, now))
+            cycle.update(_execute_ready_cycle(config, preparation, observation_number, production_executor, research_executor, now, cycle_id))
     elif status == WAITING_FOR_M5_CLOSE:
         next_run = int(preparation.get("next_required_checkpoint") or now()) + WAITING_SAFETY_DELAY_SECONDS
         cycle.update({"next_scheduled_run": next_run, "blocker": WAITING_FOR_M5_CLOSE})
@@ -183,9 +211,20 @@ def run_observation_cycle(
     return cycle
 
 
-def observation_runner_status(path: Path = Path("artifact/observation-runner.json"), *, clock: Clock | None = None) -> dict[str, Any]:
+def observation_runner_status(
+    path: Path = Path("artifact/observation-runner.json"),
+    *,
+    state_path: Path = Path("reviews/thesis-baseline.json"),
+    research_tracker_path: Path = DEFAULT_TRACKER_PATH,
+    journal_path: Path | None = None,
+    clock: Clock | None = None,
+) -> dict[str, Any]:
     now = clock or (lambda: int(time.time()))
     state = _read_json_or_empty(path)
+    journal = _read_journal(journal_path or path.parent / "observation-commit-journal.json")
+    tx = _active_transaction(journal)
+    latest_production = latest_production_observation(journal, research_tracker_path)
+    latest_research = latest_research_observation(research_tracker_path)
     pid = state.get("pid")
     running = bool(pid and state.get("status") in RUNNER_ACTIVE_STATUSES and _pid_is_live(int(pid)))
     return {
@@ -208,6 +247,13 @@ def observation_runner_status(path: Path = Path("artifact/observation-runner.jso
         "waiting_cycles": int(state.get("waiting_cycles") or 0),
         "blocked_cycles": int(state.get("blocked_cycles") or 0),
         "stale": _is_stale_state(state, now()),
+        "pending_research_recovery": bool(tx and tx.get("status") in {"PRODUCTION_COMMITTED", "RESEARCH_PENDING"}),
+        "pending_observation_number": tx.get("observation_number") if tx else None,
+        "pending_cycle_id": tx.get("cycle_id") if tx else None,
+        "production_latest_observation": latest_production,
+        "research_latest_observation": latest_research,
+        "recovery_status": _recovery_status(latest_production, latest_research, tx),
+        "recovery_last_error": state.get("recovery_last_error") or (tx or {}).get("recovery_last_error"),
     }
 
 
@@ -244,7 +290,15 @@ def execute_research_observation(payload: dict[str, Any], research_tracker_path:
     )
 
 
-def next_observation_number(research_tracker_path: Path) -> int:
+def next_observation_number(research_tracker_path: Path, journal_path: Path | None = None) -> int:
+    if journal_path is not None:
+        latest = latest_production_observation(_read_journal(journal_path), research_tracker_path)
+        return latest + 1 if latest else 1
+    latest = latest_research_observation(research_tracker_path)
+    return latest + 1 if latest else 1
+
+
+def latest_research_observation(research_tracker_path: Path) -> int:
     latest = 0
     if research_tracker_path.exists():
         data = json.loads(research_tracker_path.read_text(encoding="utf-8"))
@@ -254,7 +308,19 @@ def next_observation_number(research_tracker_path: Path) -> int:
                     latest = max(latest, int(snapshot.get("observation_number") or 0))
                 except (TypeError, ValueError):
                     continue
-    return latest + 1 if latest else 1
+    return latest
+
+
+def latest_production_observation(journal: dict[str, Any], research_tracker_path: Path) -> int:
+    latest = 0
+    for tx in journal.get("transactions", []):
+        if not isinstance(tx, dict) or tx.get("status") not in {"PRODUCTION_COMMITTED", "RESEARCH_PENDING", "COMPLETE"}:
+            continue
+        try:
+            latest = max(latest, int(tx.get("observation_number") or 0))
+        except (TypeError, ValueError):
+            continue
+    return latest or latest_research_observation(research_tracker_path)
 
 
 def cadence_seconds(timestamp: int, weekday_minutes: int = DEFAULT_WEEKDAY_INTERVAL_MINUTES, weekend_minutes: int = DEFAULT_WEEKEND_INTERVAL_MINUTES) -> int:
@@ -270,17 +336,48 @@ def _execute_ready_cycle(
     production_executor: ProductionExecutor,
     research_executor: ResearchExecutor,
     clock: Clock,
+    cycle_id: str,
 ) -> dict[str, Any]:
+    starting_production_hash = _sha256_or_none(config.state_path)
+    starting_research_hash = _sha256_or_none(config.research_tracker_path)
+    _write_observation_intent(
+        config,
+        {
+            "cycle_id": cycle_id,
+            "observation_number": observation_number,
+            "canonical_checkpoint": preparation.get("canonical_checkpoint"),
+            "market_path": preparation.get("market_path"),
+            "external_path": preparation.get("external_path"),
+            "starting_production_hash": starting_production_hash,
+            "starting_research_hash": starting_research_hash,
+            "production_previous_review_timestamp": _previous_review_timestamps(config.state_path),
+            "status": "PREPARED",
+            "research_status": "PENDING",
+            "prepared_at": clock(),
+        },
+    )
     _update_runner_state(config, clock, status="REVIEWING")
+    _update_observation_intent(config, observation_number, status="PRODUCTION_COMMITTING", production_committing_at=clock())
     production_payload = production_executor(preparation, observation_number)
+    production_hash = production_payload.get("production_hash") or _sha256_or_none(config.state_path)
     pending = {
         "schema": "observation-runner-pending-research.v1",
         "observation_number": observation_number,
         "payload": production_payload,
     }
+    _update_observation_intent(
+        config,
+        observation_number,
+        status="RESEARCH_PENDING",
+        research_status="PENDING",
+        production_hash=production_hash,
+        production_committed_at=clock(),
+        recovery_payload=production_payload,
+    )
     _update_runner_state(config, clock, status="PERSISTING", pending_research=pending)
     research_report = research_executor(production_payload)
     if research_report.get("research_persistence") == "FAIL":
+        _update_observation_intent(config, observation_number, recovery_last_error=research_report.get("message") or "research persistence failed")
         raise ValueError(research_report.get("message") or "research persistence failed")
     _update_runner_state(
         config,
@@ -291,6 +388,15 @@ def _execute_ready_cycle(
         successful_observations_delta=1,
         last_cycle_finished_at=clock(),
         next_scheduled_run=_next_interval_time(clock, config),
+    )
+    _update_observation_intent(
+        config,
+        observation_number,
+        status="COMPLETE",
+        research_status="COMPLETE",
+        research_completed_at=clock(),
+        research_state_sha256=_sha256_or_none(config.research_tracker_path),
+        recovery_payload=production_payload,
     )
     return {
         "observation_number": observation_number,
@@ -318,6 +424,234 @@ def _resume_pending_research(config: RunnerConfig, research_executor: ResearchEx
         return {"status": "BLOCKED", "reason": report.get("message") or "pending research failed"}
     _update_runner_state(config, clock, status="IDLE", pending_research=None, last_successful_observation=pending.get("observation_number"))
     return {"status": "PASS", "observation_number": pending.get("observation_number")}
+
+
+def _reconcile_observation_transactions(config: RunnerConfig, research_executor: ResearchExecutor, clock: Clock) -> dict[str, Any] | None:
+    legacy = _resume_pending_research(config, research_executor, clock)
+    if legacy:
+        return legacy
+    journal = _read_journal(config.commit_journal_path)
+    tx = _active_transaction(journal)
+    latest_research = latest_research_observation(config.research_tracker_path)
+    latest_production = latest_production_observation(journal, config.research_tracker_path)
+    if latest_research > latest_production:
+        _update_runner_state(config, clock, status="BLOCKED", last_blocker=BLOCKED_INVALID_OBSERVATION_STATE, recovery_last_error="research ahead of production")
+        return {"status": BLOCKED_INVALID_OBSERVATION_STATE, "production_latest_observation": latest_production, "research_latest_observation": latest_research}
+    if latest_production - latest_research > 1:
+        _update_runner_state(config, clock, status="BLOCKED", last_blocker=BLOCKED_RECOVERY_GAP, recovery_last_error="production ahead by more than one observation")
+        return {"status": BLOCKED_RECOVERY_GAP, "production_latest_observation": latest_production, "research_latest_observation": latest_research}
+    if not tx:
+        if latest_production > latest_research:
+            _update_runner_state(config, clock, status="BLOCKED", last_blocker=BLOCKED_RECOVERY_GAP, recovery_last_error="production ahead without active recovery transaction")
+            return {"status": BLOCKED_RECOVERY_GAP, "production_latest_observation": latest_production, "research_latest_observation": latest_research}
+        return None
+    observation_number = int(tx.get("observation_number") or 0)
+    production_hash = _sha256_or_none(config.state_path)
+    if tx.get("status") in {"PREPARED", "PRODUCTION_COMMITTING"}:
+        if production_hash == tx.get("starting_production_hash"):
+            _update_observation_intent(config, observation_number, status="ABANDONED", abandoned_at=clock(), abandon_reason="PRODUCTION_NOT_COMMITTED")
+            return {"status": "PREPARED_NOT_COMMITTED", "observation_number": observation_number}
+        _update_observation_intent(
+            config,
+            observation_number,
+            status="RESEARCH_PENDING",
+            research_status="PENDING",
+            production_hash=production_hash,
+            production_committed_at=clock(),
+            recovery_inferred_from_hash_change=True,
+        )
+        tx = _active_transaction(_read_journal(config.commit_journal_path)) or tx
+    if tx.get("status") in {"PRODUCTION_COMMITTED", "RESEARCH_PENDING"} and tx.get("production_hash") and tx.get("production_hash") != production_hash:
+        _update_runner_state(config, clock, status="BLOCKED", last_blocker=BLOCKED_RECOVERY_GAP, recovery_last_error="production hash mismatch for pending observation")
+        return {"status": BLOCKED_RECOVERY_GAP, "observation_number": observation_number, "reason": "PRODUCTION_HASH_MISMATCH"}
+    if observation_number and _research_has_observation(config.research_tracker_path, observation_number):
+        _update_observation_intent(
+            config,
+            observation_number,
+            status="COMPLETE",
+            research_status="COMPLETE",
+            research_completed_at=clock(),
+            research_state_sha256=_sha256_or_none(config.research_tracker_path),
+        )
+        _update_runner_state(config, clock, status="IDLE", pending_research=None, last_successful_observation=observation_number)
+        return {"status": "PASS", "observation_number": observation_number, "recovery": "RESEARCH_ALREADY_PRESENT"}
+    if tx.get("status") in {"PRODUCTION_COMMITTED", "RESEARCH_PENDING"}:
+        _update_runner_state(
+            config,
+            clock,
+            status=PENDING_RESEARCH_RECOVERY,
+            pending_research_recovery=True,
+            pending_observation_number=observation_number,
+            pending_cycle_id=tx.get("cycle_id"),
+        )
+        payload = _recovery_payload_from_transaction(config, tx)
+        report = research_executor(payload)
+        if report.get("research_persistence") == "FAIL":
+            _update_observation_intent(config, observation_number, recovery_last_error=report.get("message") or "research persistence failed")
+            _update_runner_state(config, clock, status="BLOCKED", last_blocker="BLOCKED_RECOVERY", recovery_last_error=report.get("message") or "research persistence failed")
+            return {"status": "BLOCKED_RECOVERY", "observation_number": observation_number, "reason": report.get("message") or "research persistence failed"}
+        _update_observation_intent(
+            config,
+            observation_number,
+            status="COMPLETE",
+            research_status="COMPLETE",
+            research_completed_at=clock(),
+            research_state_sha256=_sha256_or_none(config.research_tracker_path),
+            recovery_payload=payload,
+        )
+        _update_runner_state(
+            config,
+            clock,
+            status="IDLE",
+            pending_research=None,
+            pending_research_recovery=False,
+            last_successful_observation=observation_number,
+            successful_observations_delta=1,
+        )
+        return {"status": "PASS", "observation_number": observation_number, "recovery": PENDING_RESEARCH_RECOVERY}
+    return None
+
+
+def _read_journal(path: Path) -> dict[str, Any]:
+    data = _read_json_or_empty(path)
+    if data.get("schema") != COMMIT_JOURNAL_SCHEMA or not isinstance(data.get("transactions"), list):
+        return {"schema": COMMIT_JOURNAL_SCHEMA, "transactions": []}
+    return data
+
+
+def _write_journal(path: Path, journal: dict[str, Any]) -> None:
+    journal.setdefault("schema", COMMIT_JOURNAL_SCHEMA)
+    journal.setdefault("transactions", [])
+    atomic_write_json(path, journal)
+
+
+def _write_observation_intent(config: RunnerConfig, transaction: dict[str, Any]) -> None:
+    journal = _read_journal(config.commit_journal_path)
+    journal.setdefault("transactions", []).append(dict(transaction))
+    _write_journal(config.commit_journal_path, journal)
+
+
+def _update_observation_intent(config: RunnerConfig, observation_number: int, **updates: Any) -> None:
+    journal = _read_journal(config.commit_journal_path)
+    transactions = journal.setdefault("transactions", [])
+    for tx in reversed(transactions):
+        if isinstance(tx, dict) and int(tx.get("observation_number") or 0) == int(observation_number):
+            tx.update(updates)
+            _write_journal(config.commit_journal_path, journal)
+            return
+    replacement = {"observation_number": observation_number, **updates}
+    transactions.append(replacement)
+    _write_journal(config.commit_journal_path, journal)
+
+
+def _active_transaction(journal: dict[str, Any]) -> dict[str, Any] | None:
+    active_statuses = {"PREPARED", "PRODUCTION_COMMITTING", "PRODUCTION_COMMITTED", "RESEARCH_PENDING"}
+    for tx in reversed(journal.get("transactions", [])):
+        if isinstance(tx, dict) and tx.get("status") in active_statuses:
+            return tx
+    return None
+
+
+def _recovery_status(latest_production: int, latest_research: int, tx: dict[str, Any] | None) -> str:
+    if latest_research > latest_production:
+        return BLOCKED_INVALID_OBSERVATION_STATE
+    if latest_production - latest_research > 1:
+        return BLOCKED_RECOVERY_GAP
+    if tx and tx.get("status") in {"PRODUCTION_COMMITTED", "RESEARCH_PENDING"}:
+        return PENDING_RESEARCH_RECOVERY
+    return "NORMAL"
+
+
+def _research_has_observation(path: Path, observation_number: int) -> bool:
+    if not path.exists():
+        return False
+    data = json.loads(path.read_text(encoding="utf-8"))
+    for record in data.get("records", []):
+        for snapshot in record.get("snapshots", []):
+            try:
+                if int(snapshot.get("observation_number") or 0) == int(observation_number):
+                    return True
+            except (TypeError, ValueError):
+                continue
+    return False
+
+
+def _previous_review_timestamps(path: Path) -> dict[str, int]:
+    states, _ = load_review_state(path)
+    return {
+        symbol: int((state or {}).get("previous_review_timestamp") or 0)
+        for symbol, state in states.items()
+    }
+
+
+def _recovery_payload_from_transaction(config: RunnerConfig, transaction: dict[str, Any]) -> dict[str, Any]:
+    payload = transaction.get("recovery_payload")
+    if isinstance(payload, dict):
+        return payload
+    market_path = Path(str(transaction.get("market_path") or config.output_dir / "market-data-v1.json"))
+    external_path = Path(str(transaction.get("external_path") or config.output_dir / "external-market-evidence-v1.json"))
+    frames = _load_frames(market_path)
+    states, _ = load_review_state(config.state_path)
+    reviews = {
+        symbol: _review_from_persisted_state(symbol, state)
+        for symbol, state in states.items()
+        if symbol in frames
+    }
+    opportunity_snapshots = {
+        symbol: extract_opportunity_snapshot(review, frames[symbol])
+        for symbol, review in reviews.items()
+    }
+    return {
+        "observation_number": int(transaction.get("observation_number") or 0),
+        "market_path": str(market_path),
+        "external_path": str(external_path),
+        "reviews": reviews,
+        "opportunity_snapshots": opportunity_snapshots,
+        "external_evidence": _external_by_symbol(external_path),
+        "production_hash": _sha256_or_none(config.state_path),
+        "recovered_from_journal": True,
+    }
+
+
+def _review_from_persisted_state(symbol: str, state: dict[str, Any]) -> dict[str, Any]:
+    active = state.get("active_tactical_draw") if isinstance(state.get("active_tactical_draw"), dict) else None
+    setup = state.get("active_setup_poi") if isinstance(state.get("active_setup_poi"), dict) else None
+    return {
+        "Symbol": symbol,
+        "Swing_Bias": state.get("previous_bias"),
+        "Current_Phase": state.get("current_phase"),
+        "Market_Regime": state.get("previous_regime"),
+        "State": state.get("previous_state"),
+        "Sequence_ID": state.get("sequence_id"),
+        "Sequence_State": state.get("sequence_state"),
+        "Sequence_Started_At": str(state.get("sequence_started_at") or "NONE"),
+        "Review_Timestamp": str(state.get("previous_review_timestamp") or 0),
+        "Active_Tactical_Draw": _level_to_text(active),
+        "Active_Draw_Selected_At": str((active or {}).get("selected_at") or "NONE"),
+        "Setup_FVG": _setup_to_text(setup),
+        "Eligible_Retest_Confirmed": "YES" if state.get("eligible_retest_confirmed") else "NO",
+        "Eligible_Retest_Setup_ID": state.get("eligible_retest_setup_id") or "NONE",
+        "Eligible_Retest_Timestamp": str(state.get("eligible_retest_timestamp") or "NONE"),
+        "Missing_Evidence": [],
+        "Liquidity_Events": [],
+        "Structure_State": {},
+        "Structural_Invalidation": {},
+        "Sequence_Transitions": state.get("sequence_transition_history") or [],
+    }
+
+
+def _level_to_text(level: dict[str, Any] | None) -> str:
+    if not level:
+        return "NONE"
+    return f"{level.get('type')} {level.get('price')} on {level.get('timeframe')}, formed_at={level.get('formed_at')}"
+
+
+def _setup_to_text(setup: dict[str, Any] | None) -> str:
+    if not setup:
+        return "NONE"
+    lower = setup.get("lower")
+    upper = setup.get("upper")
+    return f"{setup.get('direction', 'BULLISH')} SETUP_FVG {setup.get('timeframe')} {lower}-{upper} @ {setup.get('formed_at')}; status={setup.get('status', 'FRESH')}"
 
 
 def _acquire_runner_lock(config: RunnerConfig, clock: Clock) -> dict[str, Any]:
