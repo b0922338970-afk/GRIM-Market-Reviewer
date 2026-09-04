@@ -1,4 +1,4 @@
-﻿"""Long-running automatic observation runner.
+"""Long-running automatic observation runner.
 
 The runner is orchestration-only.  It delegates temporal alignment to the
 observation coordinator and delegates production/research state changes to the
@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .missed_opportunity import DEFAULT_TRACKER_PATH
+from .missed_opportunity import DEFAULT_TRACKER_PATH, latest_processed_observation, latest_tracker_snapshot_observation, mark_research_observation_processed
 from .missed_opportunity_live import apply_missed_opportunity_observation
 from .model import ACTIVE_SYMBOLS, TIMEFRAMES, MarketDataFrame, to_market_data_frame
 from .observation_coordinator import BLOCKED, READY, WAITING_FOR_M5_CLOSE, prepare_observation
@@ -266,6 +266,7 @@ def observation_runner_status(
         "pending_cycle_id": tx.get("cycle_id") if tx else None,
         "production_latest_observation": latest_production,
         "research_latest_observation": latest_research,
+        "latest_tracker_snapshot_observation": latest_tracker_snapshot_observation_from_path(research_tracker_path),
         "production_head_observation": head.get("observation_number"),
         "production_head_checkpoint": head.get("canonical_checkpoint"),
         "production_head_hash": head.get("production_state_sha256"),
@@ -290,6 +291,7 @@ def execute_production_observation(preparation: dict[str, Any], observation_numb
         "opportunity_snapshots": opportunity_snapshots,
         "external_evidence": _external_by_symbol(external_path),
         "production_hash": _sha256_or_none(state_path),
+        "canonical_checkpoint": preparation.get("canonical_checkpoint"),
     }
     return payload
 
@@ -302,6 +304,8 @@ def execute_research_observation(payload: dict[str, Any], research_tracker_path:
         opportunity_snapshots=payload["opportunity_snapshots"],
         external_evidence=payload.get("external_evidence"),
         observation_number=int(payload["observation_number"]),
+        canonical_checkpoint=_optional_int(payload.get("canonical_checkpoint")),
+        production_state_sha256=payload.get("production_hash"),
         store_path=research_tracker_path,
         persist=True,
     )
@@ -319,16 +323,17 @@ def next_observation_number(research_tracker_path: Path, journal_path: Path | No
 
 
 def latest_research_observation(research_tracker_path: Path) -> int:
-    latest = 0
-    if research_tracker_path.exists():
-        data = json.loads(research_tracker_path.read_text(encoding="utf-8"))
-        for record in data.get("records", []):
-            for snapshot in record.get("snapshots", []):
-                try:
-                    latest = max(latest, int(snapshot.get("observation_number") or 0))
-                except (TypeError, ValueError):
-                    continue
-    return latest
+    if not research_tracker_path.exists():
+        return 0
+    data = json.loads(research_tracker_path.read_text(encoding="utf-8"))
+    return latest_processed_observation(data)
+
+
+def latest_tracker_snapshot_observation_from_path(research_tracker_path: Path) -> int:
+    if not research_tracker_path.exists():
+        return 0
+    data = json.loads(research_tracker_path.read_text(encoding="utf-8"))
+    return latest_tracker_snapshot_observation(data)
 
 
 def latest_production_observation(journal: dict[str, Any], research_tracker_path: Path, production_head: dict[str, Any] | None = None) -> int:
@@ -490,6 +495,9 @@ def _reconcile_observation_transactions(config: RunnerConfig, research_executor:
         _update_runner_state(config, clock, status="BLOCKED", last_blocker=BLOCKED_RECOVERY_GAP, recovery_last_error="production ahead by more than one observation")
         return {"status": BLOCKED_RECOVERY_GAP, "production_latest_observation": latest_production, "research_latest_observation": latest_research}
     if not tx:
+        repaired = _repair_completed_research_watermark(config, journal, head_observation, latest_research, production_hash, clock)
+        if repaired:
+            return repaired
         if head_observation and head_observation > latest_research:
             _update_runner_state(config, clock, status="BLOCKED", last_blocker=BLOCKED_RECOVERY_METADATA_MISSING, recovery_last_error="production ahead without recovery journal")
             return {"status": BLOCKED_RECOVERY_METADATA_MISSING, "recovery": PENDING_RESEARCH_RECOVERY_NO_JOURNAL, "production_latest_observation": head_observation, "research_latest_observation": latest_research}
@@ -582,6 +590,67 @@ def _reconcile_observation_transactions(config: RunnerConfig, research_executor:
     return None
 
 
+
+def _repair_completed_research_watermark(
+    config: RunnerConfig,
+    journal: dict[str, Any],
+    head_observation: int | None,
+    latest_research: int,
+    production_hash: str | None,
+    clock: Clock,
+) -> dict[str, Any] | None:
+    if not head_observation or head_observation <= latest_research:
+        return None
+    tx = _complete_transaction_for_observation(journal, head_observation)
+    if not tx:
+        return None
+    if tx.get("research_status") != "COMPLETE":
+        return None
+    tx_hash = tx.get("production_hash")
+    if tx_hash and production_hash and tx_hash != production_hash:
+        _update_runner_state(config, clock, status="BLOCKED", last_blocker=BLOCKED_RECOVERY_GAP, recovery_last_error="completed research watermark production hash mismatch")
+        return {"status": BLOCKED_RECOVERY_GAP, "observation_number": head_observation, "reason": "COMPLETED_WATERMARK_PRODUCTION_HASH_MISMATCH"}
+    if not _transaction_has_recovery_evidence(config, tx):
+        _update_runner_state(config, clock, status="BLOCKED", last_blocker=BLOCKED_RECOVERY_EVIDENCE_MISSING, recovery_last_error="completed transaction recovery evidence missing")
+        return {"status": BLOCKED_RECOVERY_EVIDENCE_MISSING, "observation_number": head_observation}
+    payload = _recovery_payload_from_transaction(config, tx)
+    store = json.loads(config.research_tracker_path.read_text(encoding="utf-8")) if config.research_tracker_path.exists() else {"schema": "missed-opportunity-tracker.v1", "records": []}
+    tracker_latest = latest_tracker_snapshot_observation(store)
+    existing = store.get("research_observation_watermark")
+    if isinstance(existing, dict) and _optional_int(existing.get("latest_processed_observation")) == head_observation:
+        _update_runner_state(config, clock, status="IDLE", pending_research=None, pending_research_recovery=False, last_successful_observation=head_observation)
+        return {"status": "PASS", "observation_number": head_observation, "recovery": "RESEARCH_WATERMARK_ALREADY_PRESENT"}
+    research_result = "NO_TRACKER_APPEND" if tracker_latest < head_observation else "RECOVERY_COMPLETE"
+    reason = "NO_ELIGIBLE_OPEN_TRACKER_OR_ORIGIN" if research_result == "NO_TRACKER_APPEND" else "COMPLETED_RESEARCH_WATERMARK_REPAIR"
+    mark_research_observation_processed(
+        store,
+        observation_number=head_observation,
+        canonical_checkpoint=_optional_int(tx.get("canonical_checkpoint")),
+        production_state_sha256=tx_hash or production_hash,
+        processed_at=clock(),
+        research_result=research_result,
+        reason=reason,
+        opportunity_snapshots=payload.get("opportunity_snapshots") if isinstance(payload, dict) else None,
+        evidence_provenance={
+            "cycle_id": tx.get("cycle_id"),
+            "market_path": tx.get("market_path"),
+            "external_path": tx.get("external_path"),
+            "recovery_payload": "journal",
+        },
+    )
+    atomic_write_json(config.research_tracker_path, store)
+    _update_runner_state(config, clock, status="IDLE", pending_research=None, pending_research_recovery=False, last_successful_observation=head_observation, recovery_last_error=None, last_blocker=None)
+    return {"status": "PASS", "observation_number": head_observation, "recovery": "COMPLETED_RESEARCH_WATERMARK_REPAIRED", "research_result": research_result}
+
+
+def _complete_transaction_for_observation(journal: dict[str, Any], observation_number: int) -> dict[str, Any] | None:
+    for tx in reversed(journal.get("transactions", [])):
+        if not isinstance(tx, dict):
+            continue
+        if _optional_int(tx.get("observation_number")) == observation_number and tx.get("status") == "COMPLETE":
+            return tx
+    return None
+
 def _latest_journal_production_observation(journal: dict[str, Any]) -> int:
     latest = 0
     for tx in journal.get("transactions", []):
@@ -606,6 +675,22 @@ def _research_identity_status(path: Path, transaction: dict[str, Any]) -> str:
     if not observation_number or not path.exists():
         return "MISSING"
     data = json.loads(path.read_text(encoding="utf-8"))
+    expected = _expected_research_identity(transaction)
+    watermark = data.get("research_observation_watermark")
+    if isinstance(watermark, dict):
+        watermark_observation = _optional_int(watermark.get("latest_processed_observation"))
+        if watermark_observation == observation_number:
+            expected_checkpoint = expected.get("canonical_checkpoint")
+            watermark_checkpoint = _optional_int(watermark.get("canonical_checkpoint"))
+            if expected_checkpoint and watermark_checkpoint and expected_checkpoint != watermark_checkpoint:
+                return "MISMATCH"
+            expected_hash = transaction.get("production_hash")
+            watermark_hash = watermark.get("production_state_sha256")
+            if expected_hash and watermark_hash and expected_hash != watermark_hash:
+                return "MISMATCH"
+            return "MATCH"
+        if watermark_observation and watermark_observation > observation_number:
+            return "MISMATCH"
     matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
     for record in data.get("records", []):
         if not isinstance(record, dict):
@@ -617,7 +702,6 @@ def _research_identity_status(path: Path, transaction: dict[str, Any]) -> str:
                 matches.append((record, snapshot))
     if not matches:
         return "MISSING"
-    expected = _expected_research_identity(transaction)
     checkpoint = expected.get("canonical_checkpoint")
     expected_symbols = expected.get("symbols") or {}
     for record, snapshot in matches:
@@ -809,6 +893,7 @@ def _recovery_payload_from_transaction(config: RunnerConfig, transaction: dict[s
         "opportunity_snapshots": opportunity_snapshots,
         "external_evidence": _external_by_symbol(external_path),
         "production_hash": _sha256_or_none(config.state_path),
+        "canonical_checkpoint": _optional_int(transaction.get("canonical_checkpoint")),
         "recovered_from_journal": True,
     }
 

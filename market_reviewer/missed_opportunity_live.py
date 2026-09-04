@@ -21,7 +21,10 @@ from .missed_opportunity import (
     create_tracker,
     empty_store,
     is_eligible_origin,
+    latest_processed_observation,
+    latest_tracker_snapshot_observation,
     load_tracker_store,
+    mark_research_observation_processed,
     persist_tracker_store,
     record_production_conversion,
     update_horizon_outcomes,
@@ -53,6 +56,9 @@ def apply_missed_opportunity_observation(
     external_evidence: dict[str, dict[str, Any]] | None = None,
     observation_number: int,
     store_path: Path = DEFAULT_TRACKER_PATH,
+    canonical_checkpoint: int | None = None,
+    production_state_sha256: str | None = None,
+    processed_at: int | None = None,
     persist: bool = True,
     persist_func: PersistFunc = persist_tracker_store,
 ) -> dict[str, Any]:
@@ -84,6 +90,22 @@ def apply_missed_opportunity_observation(
             symbol_frames = frames.get(symbol)
             if symbol_frames and "M5" in symbol_frames:
                 update_horizon_outcomes(record, symbol_frames["M5"])
+        before_snapshot_total = _snapshot_total(before_store)
+        after_snapshot_total = _snapshot_total(store)
+        snapshot_append_count = max(0, after_snapshot_total - before_snapshot_total)
+        research_result = "TRACKER_UPDATED" if snapshot_append_count else "NO_TRACKER_APPEND"
+        reason = None if snapshot_append_count else "NO_ELIGIBLE_OPEN_TRACKER_OR_ORIGIN"
+        mark_research_observation_processed(
+            store,
+            observation_number=int(observation_number),
+            canonical_checkpoint=canonical_checkpoint or _canonical_checkpoint_from_opportunities(opportunity_snapshots),
+            production_state_sha256=production_state_sha256 or "UNKNOWN_PRODUCTION_HASH",
+            processed_at=processed_at,
+            research_result=research_result,
+            reason=reason,
+            opportunity_snapshots=opportunity_snapshots,
+            evidence_provenance={"symbols": sorted(opportunity_snapshots), "external_symbols": sorted(external_by_symbol)},
+        )
         health = tracker_health(store)
         reload_matches = None
         if persist:
@@ -99,6 +121,10 @@ def apply_missed_opportunity_observation(
             "store_path": str(store_path),
             "symbols": symbol_reports,
             "health": health,
+            "research_result": research_result,
+            "tracker_append_count": snapshot_append_count,
+            "latest_processed_observation": latest_processed_observation(store),
+            "latest_tracker_snapshot_observation": latest_tracker_snapshot_observation(store),
             "fresh_reload_match": reload_matches,
             "production_observation_impact": "NONE",
         }
@@ -198,11 +224,15 @@ def missed_opportunity_status(path: Path = DEFAULT_TRACKER_PATH) -> dict[str, An
                 },
             }
         )
+    watermark = store.get("research_observation_watermark") or {}
     return {
         "schema": store.get("schema"),
         "store_loaded": load_status,
         "store_path": str(path),
         "record_count": len(store.get("records", [])),
+        "latest_processed_observation": latest_processed_observation(store),
+        "latest_tracker_snapshot_observation": latest_tracker_snapshot_observation(store),
+        "research_observation_watermark": watermark,
         "records": records,
         "health": tracker_health(store),
     }
@@ -227,6 +257,25 @@ def tracker_health(store: dict[str, Any]) -> dict[str, Any]:
         "persistence_status": "NOT_ATTEMPTED",
     }
 
+
+
+
+def _snapshot_total(store: dict[str, Any]) -> int:
+    return sum(len(record.get("snapshots", [])) for record in store.get("records", []) if isinstance(record, dict))
+
+
+def _canonical_checkpoint_from_opportunities(opportunity_snapshots: dict[str, dict[str, Any]]) -> int | None:
+    timestamps = []
+    for snapshot in opportunity_snapshots.values():
+        if not isinstance(snapshot, dict):
+            continue
+        try:
+            value = int(snapshot.get("snapshot_timestamp") or 0)
+        except (TypeError, ValueError):
+            value = 0
+        if value > 0:
+            timestamps.append(value)
+    return max(timestamps) if timestamps else None
 
 def build_tracker_candidate_from_observation(
     *,

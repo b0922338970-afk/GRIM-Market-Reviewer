@@ -20,6 +20,8 @@ from .persistence import atomic_write_json
 
 
 TRACKER_SCHEMA = "missed-opportunity-tracker.v1"
+RESEARCH_WATERMARK_SCHEMA = "research-observation-watermark.v1"
+RESEARCH_WATERMARK_KEY = "research_observation_watermark"
 DEFAULT_TRACKER_PATH = Path("research/missed-opportunities.json")
 TRACKER_STATUSES = {"ACTIVE", "DETERIORATING", "CONVERTED", "TERMINAL", "OUTCOME_COMPLETE"}
 EPISODE_STATUSES = {"OPEN", "BROKEN", "CLOSED"}
@@ -70,6 +72,96 @@ def persist_tracker_store(path: Path, store: dict[str, Any]) -> None:
     _validate_store_is_research_only(store)
     atomic_write_json(path, store)
 
+
+
+def latest_tracker_snapshot_observation(store: dict[str, Any]) -> int:
+    latest = 0
+    for record in store.get("records", []):
+        if not isinstance(record, dict):
+            continue
+        for snapshot in record.get("snapshots", []):
+            if not isinstance(snapshot, dict):
+                continue
+            value = _optional_int(snapshot.get("observation_number"))
+            if value:
+                latest = max(latest, value)
+    return latest
+
+
+def research_watermark(store: dict[str, Any]) -> dict[str, Any]:
+    watermark = store.get(RESEARCH_WATERMARK_KEY)
+    if isinstance(watermark, dict) and watermark.get("schema") == RESEARCH_WATERMARK_SCHEMA:
+        return dict(watermark)
+    latest_snapshot = latest_tracker_snapshot_observation(store)
+    return {
+        "schema": RESEARCH_WATERMARK_SCHEMA,
+        "latest_processed_observation": latest_snapshot,
+        "latest_tracker_snapshot_observation": latest_snapshot,
+        "research_result": "BOOTSTRAPPED_FROM_TRACKER_HISTORY",
+        "reason": "LEGACY_STORE_WITHOUT_EXPLICIT_WATERMARK",
+    }
+
+
+def latest_processed_observation(store: dict[str, Any]) -> int:
+    watermark = research_watermark(store)
+    return _optional_int(watermark.get("latest_processed_observation")) or 0
+
+
+def mark_research_observation_processed(
+    store: dict[str, Any],
+    *,
+    observation_number: int,
+    canonical_checkpoint: int | None,
+    production_state_sha256: str | None,
+    processed_at: int | None,
+    research_result: str,
+    reason: str | None = None,
+    opportunity_snapshots: dict[str, Any] | None = None,
+    evidence_provenance: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    if observation_number <= 0:
+        raise ValueError("observation_number must be positive")
+    if canonical_checkpoint is not None and canonical_checkpoint <= 0:
+        raise ValueError("canonical_checkpoint must be positive")
+    if not production_state_sha256:
+        raise ValueError("production_state_sha256 is required")
+    existing = store.get(RESEARCH_WATERMARK_KEY)
+    if isinstance(existing, dict):
+        existing_observation = _optional_int(existing.get("latest_processed_observation")) or 0
+        if observation_number < existing_observation:
+            raise ValueError("research watermark cannot move backward")
+        if observation_number == existing_observation:
+            existing_checkpoint = _optional_int(existing.get("canonical_checkpoint"))
+            existing_hash = existing.get("production_state_sha256")
+            if existing_checkpoint and canonical_checkpoint and existing_checkpoint != canonical_checkpoint:
+                raise ValueError("research watermark checkpoint mismatch")
+            if existing_hash and production_state_sha256 and existing_hash != production_state_sha256:
+                raise ValueError("research watermark production hash mismatch")
+    latest_snapshot = latest_tracker_snapshot_observation(store)
+    identities: dict[str, Any] = {}
+    for symbol, snapshot in (opportunity_snapshots or {}).items():
+        if not isinstance(snapshot, dict):
+            continue
+        identities[str(symbol)] = {
+            "opportunity_id": snapshot.get("opportunity_id"),
+            "sequence_id": snapshot.get("sequence_id"),
+            "sequence_state": snapshot.get("sequence_state"),
+            "snapshot_timestamp": snapshot.get("snapshot_timestamp"),
+            "opportunity_status": snapshot.get("opportunity_status"),
+        }
+    store[RESEARCH_WATERMARK_KEY] = {
+        "schema": RESEARCH_WATERMARK_SCHEMA,
+        "latest_processed_observation": int(observation_number),
+        "latest_tracker_snapshot_observation": int(latest_snapshot),
+        "canonical_checkpoint": canonical_checkpoint,
+        "production_state_sha256": production_state_sha256,
+        "processed_at": processed_at,
+        "research_result": research_result,
+        "reason": reason,
+        "opportunity_identities": identities,
+        "evidence_provenance": dict(evidence_provenance or {}),
+    }
+    return store
 
 def deterministic_tracker_id(symbol: str, direction: str, origin_snapshot_timestamp: int, context_signature: dict[str, Any]) -> str:
     payload = json.dumps(_canonical_context(context_signature), sort_keys=True, separators=(",", ":"))
