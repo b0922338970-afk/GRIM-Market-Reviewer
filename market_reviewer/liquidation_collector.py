@@ -17,6 +17,7 @@ import socket
 import ssl
 import struct
 import subprocess
+import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
@@ -91,6 +92,29 @@ class LiquidationEventStore:
         return self._fingerprints[symbol]
 
 
+class CoverageMetadataCorrupted(ValueError):
+    """Historical coverage is unknown; explicit recovery is required."""
+
+    def __init__(self, path: Path) -> None:
+        super().__init__(f"COVERAGE_METADATA_CORRUPTED: {path}")
+        self.path = path
+
+
+def _fsync_coverage_directory(directory: Path) -> None:
+    # Windows lacks portable directory fsync. File fsync and same-directory
+    # os.replace remain mandatory; directory durability is best effort.
+    if os.name == "nt":
+        return
+    try:
+        descriptor = os.open(directory, os.O_RDONLY)
+        try:
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+    except OSError:
+        pass
+
+
 class CoverageStore:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -100,10 +124,32 @@ class CoverageStore:
         path = self.path(symbol)
         if not path.exists():
             return _empty_coverage(symbol)
-        return _normalize_coverage(json.loads(path.read_text(encoding="utf-8")), symbol)
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(payload, dict):
+                raise ValueError("coverage must be a JSON object")
+        except (ValueError, UnicodeError) as exc:
+            raise CoverageMetadataCorrupted(path) from exc
+        return _normalize_coverage(payload, symbol)
 
     def save(self, symbol: str, coverage: dict[str, Any]) -> None:
-        self.path(symbol).write_text(json.dumps(coverage, indent=2, sort_keys=True), encoding="utf-8")
+        payload = json.dumps(coverage, indent=2, sort_keys=True)
+        target = self.path(symbol)
+        temporary = None
+        try:
+            with tempfile.NamedTemporaryFile(
+                mode="w", encoding="utf-8", dir=target.parent,
+                prefix=f".{target.name}.", suffix=".tmp", delete=False,
+            ) as handle:
+                temporary = Path(handle.name)
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            os.replace(temporary, target)
+            _fsync_coverage_directory(target.parent)
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
 
     def mark_started(self, symbol: str, timestamp: int) -> dict[str, Any]:
         coverage = self.load(symbol)
