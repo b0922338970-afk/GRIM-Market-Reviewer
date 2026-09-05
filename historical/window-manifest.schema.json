@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Historical replay window manifest",
+  "type": "object",
+  "required": [
+    "schema",
+    "sample_source",
+    "windows"
+  ],
+  "properties": {
+    "schema": {
+      "const": "historical-replay-manifest.v1"
+    },
+    "sample_source": {
+      "const": "HISTORICAL_REPLAY"
+    },
+    "target_categories": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "STRONG_UPTREND",
+          "STRONG_DOWNTREND",
+          "TREND_PULLBACK",
+          "RANGE",
+          "REVERSAL",
+          "HIGH_VOLATILITY",
+          "LOW_VOLATILITY",
+          "BREAKOUT_CONTINUATION",
+          "FAKE_BREAKOUT",
+          "LIQUIDATION_EVENT",
+          "EVENT_DRIVEN",
+          "WEEKEND_LOW_LIQUIDITY",
+          "EXHAUSTION",
+          "TREND_END"
+        ]
+      }
+    },
+    "windows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "window_id",
+          "symbol",
+          "start",
+          "end",
+          "sampling_reason",
+          "analysis_regime_label",
+          "source",
+          "status"
+        ],
+        "properties": {
+          "window_id": {
+            "type": "string",
+            "pattern": "^[A-Za-z0-9][A-Za-z0-9_.-]{0,119}$"
+          },
+          "symbol": {
+            "enum": [
+              "BTC",
+              "ETH"
+            ]
+          },
+          "start": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "end": {
+            "type": [
+              "integer",
+              "string",
+              "null"
+            ]
+          },
+          "sampling_reason": {
+            "type": "string"
+          },
+          "target_category": {
+            "enum": [
+              "STRONG_UPTREND",
+              "STRONG_DOWNTREND",
+              "TREND_PULLBACK",
+              "RANGE",
+              "REVERSAL",
+              "HIGH_VOLATILITY",
+              "LOW_VOLATILITY",
+              "BREAKOUT_CONTINUATION",
+              "FAKE_BREAKOUT",
+              "LIQUIDATION_EVENT",
+              "EVENT_DRIVEN",
+              "WEEKEND_LOW_LIQUIDITY",
+              "EXHAUSTION",
+              "TREND_END"
+            ]
+          },
+          "analysis_regime_label": {
+            "enum": [
+              null,
+              "STRONG_UPTREND",
+              "STRONG_DOWNTREND",
+              "TREND_PULLBACK",
+              "RANGE",
+              "REVERSAL",
+              "HIGH_VOLATILITY",
+              "LOW_VOLATILITY",
+              "BREAKOUT_CONTINUATION",
+              "FAKE_BREAKOUT",
+              "LIQUIDATION_EVENT",
+              "EVENT_DRIVEN",
+              "WEEKEND_LOW_LIQUIDITY",
+              "EXHAUSTION",
+              "TREND_END"
+            ]
+          },
+          "source": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "enum": [
+              "READY",
+              "NOT_SELECTED"
+            ]
+          },
+          "step_minutes": {
+            "type": "integer",
+            "minimum": 5,
+            "multipleOf": 5
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "status": {
+                  "const": "READY"
+                }
+              }
+            },
+            "then": {
+              "properties": {
+                "start": {
+                  "type": [
+                    "integer",
+                    "string"
+                  ]
+                },
+                "end": {
+                  "type": [
+                    "integer",
+                    "string"
+                  ]
+                },
+                "source": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          }
+        ]
+      }
+    }
+  }
+}

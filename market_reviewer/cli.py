@@ -67,12 +67,68 @@ def build_parser() -> argparse.ArgumentParser:
     runner_status.add_argument("--research-store", default="research/missed-opportunities.json", help="Research tracker store path")
     runner_status.add_argument("--journal", default=None, help="Observation commit journal path")
     runner_status.add_argument("--production-head", default=None, help="Production observation head path")
+    historical = subparsers.add_parser("historical-replay", help="Bounded offline historical opportunity replay")
+    historical.add_argument("--symbol", required=True, choices=("BTC", "ETH"))
+    historical.add_argument("--start", required=True, help="UTC ISO time or Unix close checkpoint")
+    historical.add_argument("--end", required=True, help="UTC ISO time or Unix close checkpoint")
+    historical.add_argument("--input", help="Existing market-data.v1 file; otherwise use historical cache")
+    historical.add_argument("--step-minutes", type=int, default=60)
+    historical.add_argument("--output-dir", default="research/historical-replay")
+    historical.add_argument("--cache-dir", default="artifact/historical-market-data")
+    historical.add_argument("--window-id")
+    historical.add_argument("--external-history", help="Optional historical-external-evidence.v1 archive")
+    historical.add_argument("--dry-run", action="store_true", help="Read-only bounded replay; no cache/output writes")
+    historical.add_argument("--max-observations", type=int, default=2, help="Dry-run cap (1..24)")
+    batch = subparsers.add_parser("historical-replay-batch", help="Sequential, resumable offline historical manifest")
+    batch.add_argument("manifest")
+    batch.add_argument("--output-dir", default="research/historical-replay")
+    batch.add_argument("--cache-dir", default="artifact/historical-market-data")
+    batch.add_argument("--dry-run", action="store_true")
+    batch.add_argument("--max-observations", type=int, default=2)
+    history_status = subparsers.add_parser("historical-replay-status", help="Historical maturity; optional read-only LIVE count")
+    history_status.add_argument("--output-dir", default="research/historical-replay")
+    history_status.add_argument("--live-store", help="Explicit optional live store, read only")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in {"historical-replay", "historical-replay-batch", "historical-replay-status"}:
+        import json
+        from .historical_replay import refresh_summary, run_batch, run_window
+        try:
+            if args.command == "historical-replay":
+                history = None
+                if args.external_history:
+                    archive = json.loads(Path(args.external_history).read_text(encoding="utf-8"))
+                    if archive.get("schema") != "historical-external-evidence.v1":
+                        raise ValueError("unsupported historical external archive")
+                    history = archive["records"]
+                result = run_window(
+                    symbol=args.symbol, start=args.start, end=args.end,
+                    source=Path(args.input) if args.input else None,
+                    step_minutes=args.step_minutes, output_dir=Path(args.output_dir),
+                    cache_dir=Path(args.cache_dir), window_id=args.window_id,
+                    dry_run=args.dry_run, max_observations=args.max_observations,
+                    external_history=history,
+                )
+                result = {key: result[key] for key in ("schema", "sample_source", "window_id", "status", "decision_sha256")} | {
+                    "resume_status": result.get("resume_status"),
+                    "observation_count": len(result["observations"]), "episode_count": len(result["episodes"]),
+                }
+            elif args.command == "historical-replay-batch":
+                result = run_batch(Path(args.manifest), output_dir=Path(args.output_dir), cache_dir=Path(args.cache_dir),
+                                   dry_run=args.dry_run, max_observations=args.max_observations)
+            else:
+                live = json.loads(Path(args.live_store).read_text(encoding="utf-8")) if args.live_store else None
+                result = refresh_summary(Path(args.output_dir), live)
+                result.pop("episodes", None)
+            print(json.dumps(result, indent=2, sort_keys=True))
+            return 0
+        except (ValueError, OSError, KeyError) as exc:
+            print(f"HISTORICAL_REPLAY_BLOCKED: {exc}")
+            return 2
     if args.command == "review-external":
         print(run_review_only(args.snapshot, args.thesis))
         return 0
