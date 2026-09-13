@@ -1,0 +1,1605 @@
+{
+  "contexts": [
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "STRONG",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "DISCOUNT",
+      "phase": "CONTINUATION",
+      "regime": "TREND_CONTINUATION",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "STRONG",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "DISCOUNT",
+      "phase": "CONTINUATION",
+      "regime": "TREND_CONTINUATION",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "STRONG",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "INTERNAL_SWEEP",
+      "location": "DISCOUNT",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "STRONG",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "NO_SWEEP_IN_REPORTED_SET",
+      "location": "DISCOUNT",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "STRONG",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "NO_SWEEP_IN_REPORTED_SET",
+      "location": "PREMIUM",
+      "phase": "REVERSAL_CANDIDATE",
+      "regime": "REVERSAL_CANDIDATE",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "VALID",
+      "extension": "EXTENDED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "PREMIUM",
+      "phase": "REVERSAL_CANDIDATE",
+      "regime": "REVERSAL_CANDIDATE",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "VALID",
+      "extension": "EXTENDED",
+      "liquidity_type": "INTERNAL_SWEEP",
+      "location": "PREMIUM",
+      "phase": "REVERSAL_CANDIDATE",
+      "regime": "REVERSAL_CANDIDATE",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "VALID",
+      "extension": "EXTENDED",
+      "liquidity_type": "INTERNAL_SWEEP",
+      "location": "PREMIUM",
+      "phase": "REVERSAL_CANDIDATE",
+      "regime": "REVERSAL_CANDIDATE",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "DISCOUNT",
+      "phase": "CONTINUATION",
+      "regime": "TREND_CONTINUATION",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "DISCOUNT",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "PREMIUM",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "NO_SWEEP_IN_REPORTED_SET",
+      "location": "DISCOUNT",
+      "phase": "CONTINUATION",
+      "regime": "TREND_CONTINUATION",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "NO_SWEEP_IN_REPORTED_SET",
+      "location": "DISCOUNT",
+      "phase": "CONTINUATION",
+      "regime": "TREND_CONTINUATION",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "NO_SWEEP_IN_REPORTED_SET",
+      "location": "DISCOUNT",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BEARISH",
+        "BEARISH"
+      ],
+      "direction": "SHORT",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "NO_SWEEP_IN_REPORTED_SET",
+      "location": "DISCOUNT",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "STRONG",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "DISCOUNT",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "STRONG",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "PREMIUM",
+      "phase": "CONTINUATION",
+      "regime": "TREND_CONTINUATION",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "STRONG",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "PREMIUM",
+      "phase": "CONTINUATION",
+      "regime": "TREND_CONTINUATION",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "VALID",
+      "extension": "EXTENDED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "DISCOUNT",
+      "phase": "REVERSAL_CANDIDATE",
+      "regime": "REVERSAL_CANDIDATE",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "VALID",
+      "extension": "EXTENDED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "PREMIUM",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "VALID",
+      "extension": "EXTENDED",
+      "liquidity_type": "INTERNAL_SWEEP",
+      "location": "PREMIUM",
+      "phase": "REVERSAL_CANDIDATE",
+      "regime": "REVERSAL_CANDIDATE",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "VALID",
+      "extension": "EXTENDED",
+      "liquidity_type": "INTERNAL_SWEEP",
+      "location": "PREMIUM",
+      "phase": "REVERSAL_CANDIDATE",
+      "regime": "REVERSAL_CANDIDATE",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "DISCOUNT",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "PREMIUM",
+      "phase": "CONTINUATION",
+      "regime": "TREND_CONTINUATION",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "PREMIUM",
+      "phase": "CONTINUATION",
+      "regime": "TREND_CONTINUATION",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "PREMIUM",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "BTC"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "EQUAL_LEVEL_SWEEP_SCOPE_UNRESOLVED",
+      "location": "PREMIUM",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "ETH"
+    },
+    {
+      "HTF": [
+        "BULLISH",
+        "BULLISH"
+      ],
+      "direction": "LONG",
+      "displacement": "VALID",
+      "extension": "NOT_FLAGGED",
+      "liquidity_type": "INTERNAL_SWEEP",
+      "location": "DISCOUNT",
+      "phase": "PULLBACK",
+      "regime": "TREND_PULLBACK",
+      "symbol": "ETH"
+    }
+  ],
+  "origins": [
+    [
+      "HIST-ETH-LONG-MOT-1610074500-c05877f0d46f",
+      21
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1613861700-541bc3720c97",
+      19
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1614038100-a48380459835",
+      25
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1618358100-dc0a8ed049a1",
+      16
+    ],
+    [
+      "HIST-ETH-LONG-MOT-1618707300-c05877f0d46f",
+      18
+    ],
+    [
+      "HIST-BTC-SHORT-MOT-1620676500-a89e89858185",
+      0
+    ],
+    [
+      "HIST-ETH-LONG-MOT-1620680100-a48380459835",
+      26
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1636617300-a48380459835",
+      15
+    ],
+    [
+      "HIST-ETH-LONG-MOT-1636559700-dc0a8ed049a1",
+      17
+    ],
+    [
+      "HIST-BTC-SHORT-MOT-1642690500-95427edb0f6b",
+      6
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1642690500-95427edb0f6b",
+      7
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1653551700-0fc8982fb7cd",
+      14
+    ],
+    [
+      "HIST-BTC-SHORT-MOT-1654905300-a89e89858185",
+      8
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1655942100-a89e89858185",
+      1
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1660535700-a48380459835",
+      25
+    ],
+    [
+      "HIST-ETH-LONG-MOT-1660535700-dc0a8ed049a1",
+      17
+    ],
+    [
+      "HIST-BTC-SHORT-MOT-1661514900-a89e89858185",
+      11
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1661529300-a89e89858185",
+      1
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1663073700-c05877f0d46f",
+      20
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1663286100-a89e89858185",
+      12
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1664243700-95427edb0f6b",
+      5
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1665834900-0fc8982fb7cd",
+      3
+    ],
+    [
+      "HIST-BTC-SHORT-MOT-1667951700-0fc8982fb7cd",
+      9
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1667951700-0fc8982fb7cd",
+      2
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1669172100-8a7ea2426311",
+      4
+    ],
+    [
+      "HIST-BTC-SHORT-MOT-1671767700-0fc8982fb7cd",
+      10
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1671764100-95427edb0f6b",
+      7
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1678751700-a48380459835",
+      25
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1678647300-95427edb0f6b",
+      7
+    ],
+    [
+      "HIST-ETH-LONG-MOT-1678751700-a48380459835",
+      26
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1687161300-a48380459835",
+      15
+    ],
+    [
+      "HIST-ETH-LONG-MOT-1687305300-dc0a8ed049a1",
+      24
+    ],
+    [
+      "HIST-BTC-SHORT-MOT-1692143700-0fc8982fb7cd",
+      13
+    ],
+    [
+      "HIST-BTC-SHORT-MOT-1695599700-a89e89858185",
+      11
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1696204500-dc0a8ed049a1",
+      23
+    ],
+    [
+      "HIST-ETH-LONG-MOT-1696319700-a48380459835",
+      22
+    ],
+    [
+      "HIST-ETH-LONG-MOT-1696420500-a48380459835",
+      27
+    ],
+    [
+      "HIST-BTC-SHORT-MOT-1705103700-a89e89858185",
+      11
+    ],
+    [
+      "HIST-BTC-SHORT-MOT-1713052500-0fc8982fb7cd",
+      13
+    ],
+    [
+      "HIST-ETH-SHORT-MOT-1713052500-0fc8982fb7cd",
+      14
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1717782900-c05877f0d46f",
+      20
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1717962900-dc0a8ed049a1",
+      16
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1718034900-dc0a8ed049a1",
+      23
+    ],
+    [
+      "HIST-BTC-LONG-MOT-1730822100-a48380459835",
+      25
+    ],
+    [
+      "HIST-ETH-LONG-MOT-1730865300-dc0a8ed049a1",
+      17
+    ]
+  ],
+  "membership": {
+    "BOS": [
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1620676500-a89e89858185"
+        ],
+        "B": [],
+        "context": 0
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1655942100-a89e89858185"
+        ],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1661529300-a89e89858185"
+        ],
+        "context": 1
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1667951700-0fc8982fb7cd"
+        ],
+        "context": 2
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1665834900-0fc8982fb7cd"
+        ],
+        "context": 3
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1669172100-8a7ea2426311"
+        ],
+        "B": [],
+        "context": 4
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1664243700-95427edb0f6b"
+        ],
+        "context": 5
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1642690500-95427edb0f6b"
+        ],
+        "context": 6
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1642690500-95427edb0f6b"
+        ],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1671764100-95427edb0f6b",
+          "HIST-ETH-SHORT-MOT-1678647300-95427edb0f6b"
+        ],
+        "context": 7
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1654905300-a89e89858185"
+        ],
+        "B": [],
+        "context": 8
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1667951700-0fc8982fb7cd"
+        ],
+        "context": 9
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1671767700-0fc8982fb7cd"
+        ],
+        "context": 10
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1661514900-a89e89858185",
+          "HIST-BTC-SHORT-MOT-1695599700-a89e89858185"
+        ],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1705103700-a89e89858185"
+        ],
+        "context": 11
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1663286100-a89e89858185"
+        ],
+        "context": 12
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1692143700-0fc8982fb7cd",
+          "HIST-BTC-SHORT-MOT-1713052500-0fc8982fb7cd"
+        ],
+        "context": 13
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1653551700-0fc8982fb7cd"
+        ],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1713052500-0fc8982fb7cd"
+        ],
+        "context": 14
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1636617300-a48380459835"
+        ],
+        "B": [
+          "HIST-BTC-LONG-MOT-1687161300-a48380459835"
+        ],
+        "context": 15
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1618358100-dc0a8ed049a1",
+          "HIST-BTC-LONG-MOT-1717962900-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 16
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1636559700-dc0a8ed049a1",
+          "HIST-ETH-LONG-MOT-1660535700-dc0a8ed049a1"
+        ],
+        "B": [
+          "HIST-ETH-LONG-MOT-1730865300-dc0a8ed049a1"
+        ],
+        "context": 17
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-LONG-MOT-1618707300-c05877f0d46f"
+        ],
+        "context": 18
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1613861700-541bc3720c97"
+        ],
+        "B": [],
+        "context": 19
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1717782900-c05877f0d46f"
+        ],
+        "B": [
+          "HIST-BTC-LONG-MOT-1663073700-c05877f0d46f"
+        ],
+        "context": 20
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-LONG-MOT-1610074500-c05877f0d46f"
+        ],
+        "context": 21
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1696319700-a48380459835"
+        ],
+        "B": [],
+        "context": 22
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1696204500-dc0a8ed049a1",
+          "HIST-BTC-LONG-MOT-1718034900-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 23
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-LONG-MOT-1687305300-dc0a8ed049a1"
+        ],
+        "context": 24
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1660535700-a48380459835"
+        ],
+        "B": [
+          "HIST-BTC-LONG-MOT-1614038100-a48380459835",
+          "HIST-BTC-LONG-MOT-1678751700-a48380459835",
+          "HIST-BTC-LONG-MOT-1730822100-a48380459835"
+        ],
+        "context": 25
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1678751700-a48380459835"
+        ],
+        "B": [
+          "HIST-ETH-LONG-MOT-1620680100-a48380459835"
+        ],
+        "context": 26
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1696420500-a48380459835"
+        ],
+        "B": [],
+        "context": 27
+      }
+    ],
+    "FVG_BPR": [
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1620676500-a89e89858185"
+        ],
+        "B": [],
+        "context": 0
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1661529300-a89e89858185"
+        ],
+        "B": [],
+        "context": 1
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1667951700-0fc8982fb7cd"
+        ],
+        "context": 2
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1671764100-95427edb0f6b"
+        ],
+        "B": [],
+        "context": 7
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1671767700-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 10
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1695599700-a89e89858185",
+          "HIST-BTC-SHORT-MOT-1705103700-a89e89858185"
+        ],
+        "B": [],
+        "context": 11
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1636617300-a48380459835"
+        ],
+        "B": [],
+        "context": 15
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1618358100-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 16
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1717782900-c05877f0d46f"
+        ],
+        "B": [],
+        "context": 20
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1696319700-a48380459835"
+        ],
+        "B": [],
+        "context": 22
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1696204500-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 23
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1678751700-a48380459835"
+        ],
+        "B": [],
+        "context": 25
+      }
+    ],
+    "MSS": [
+      {
+        "A": [],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1620676500-a89e89858185"
+        ],
+        "context": 0
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1661529300-a89e89858185"
+        ],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1655942100-a89e89858185"
+        ],
+        "context": 1
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1667951700-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 2
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1665834900-0fc8982fb7cd"
+        ],
+        "context": 3
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1669172100-8a7ea2426311"
+        ],
+        "context": 4
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1664243700-95427edb0f6b"
+        ],
+        "context": 5
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1642690500-95427edb0f6b"
+        ],
+        "B": [],
+        "context": 6
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1642690500-95427edb0f6b",
+          "HIST-ETH-SHORT-MOT-1671764100-95427edb0f6b"
+        ],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1678647300-95427edb0f6b"
+        ],
+        "context": 7
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1654905300-a89e89858185"
+        ],
+        "context": 8
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1667951700-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 9
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1671767700-0fc8982fb7cd"
+        ],
+        "context": 10
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1695599700-a89e89858185",
+          "HIST-BTC-SHORT-MOT-1705103700-a89e89858185"
+        ],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1661514900-a89e89858185"
+        ],
+        "context": 11
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1663286100-a89e89858185"
+        ],
+        "B": [],
+        "context": 12
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1692143700-0fc8982fb7cd"
+        ],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1713052500-0fc8982fb7cd"
+        ],
+        "context": 13
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1653551700-0fc8982fb7cd",
+          "HIST-ETH-SHORT-MOT-1713052500-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 14
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-BTC-LONG-MOT-1636617300-a48380459835",
+          "HIST-BTC-LONG-MOT-1687161300-a48380459835"
+        ],
+        "context": 15
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1717962900-dc0a8ed049a1"
+        ],
+        "B": [
+          "HIST-BTC-LONG-MOT-1618358100-dc0a8ed049a1"
+        ],
+        "context": 16
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1660535700-dc0a8ed049a1"
+        ],
+        "B": [
+          "HIST-ETH-LONG-MOT-1636559700-dc0a8ed049a1",
+          "HIST-ETH-LONG-MOT-1730865300-dc0a8ed049a1"
+        ],
+        "context": 17
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-LONG-MOT-1618707300-c05877f0d46f"
+        ],
+        "context": 18
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-BTC-LONG-MOT-1613861700-541bc3720c97"
+        ],
+        "context": 19
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1663073700-c05877f0d46f",
+          "HIST-BTC-LONG-MOT-1717782900-c05877f0d46f"
+        ],
+        "B": [],
+        "context": 20
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-LONG-MOT-1610074500-c05877f0d46f"
+        ],
+        "context": 21
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-LONG-MOT-1696319700-a48380459835"
+        ],
+        "context": 22
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1718034900-dc0a8ed049a1"
+        ],
+        "B": [
+          "HIST-BTC-LONG-MOT-1696204500-dc0a8ed049a1"
+        ],
+        "context": 23
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-LONG-MOT-1687305300-dc0a8ed049a1"
+        ],
+        "context": 24
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1614038100-a48380459835",
+          "HIST-BTC-LONG-MOT-1678751700-a48380459835",
+          "HIST-BTC-LONG-MOT-1730822100-a48380459835"
+        ],
+        "B": [
+          "HIST-BTC-LONG-MOT-1660535700-a48380459835"
+        ],
+        "context": 25
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-LONG-MOT-1620680100-a48380459835",
+          "HIST-ETH-LONG-MOT-1678751700-a48380459835"
+        ],
+        "context": 26
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-LONG-MOT-1696420500-a48380459835"
+        ],
+        "context": 27
+      }
+    ],
+    "OB_BREAKER": [
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1664243700-95427edb0f6b"
+        ],
+        "B": [],
+        "context": 5
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1642690500-95427edb0f6b"
+        ],
+        "B": [],
+        "context": 6
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1678647300-95427edb0f6b"
+        ],
+        "B": [],
+        "context": 7
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1667951700-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 9
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1671767700-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 10
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1661514900-a89e89858185"
+        ],
+        "B": [],
+        "context": 11
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1692143700-0fc8982fb7cd"
+        ],
+        "context": 13
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1636559700-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 17
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1613861700-541bc3720c97"
+        ],
+        "B": [],
+        "context": 19
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1696319700-a48380459835"
+        ],
+        "B": [],
+        "context": 22
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1620680100-a48380459835"
+        ],
+        "B": [],
+        "context": 26
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1696420500-a48380459835"
+        ],
+        "B": [],
+        "context": 27
+      }
+    ],
+    "PARENT": [
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1620676500-a89e89858185"
+        ],
+        "B": [],
+        "context": 0
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1655942100-a89e89858185",
+          "HIST-ETH-SHORT-MOT-1661529300-a89e89858185"
+        ],
+        "B": [],
+        "context": 1
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1667951700-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 2
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1665834900-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 3
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1669172100-8a7ea2426311"
+        ],
+        "B": [],
+        "context": 4
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1664243700-95427edb0f6b"
+        ],
+        "B": [],
+        "context": 5
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1642690500-95427edb0f6b"
+        ],
+        "B": [],
+        "context": 6
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1642690500-95427edb0f6b",
+          "HIST-ETH-SHORT-MOT-1671764100-95427edb0f6b"
+        ],
+        "B": [],
+        "context": 7
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1654905300-a89e89858185"
+        ],
+        "B": [],
+        "context": 8
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1667951700-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 9
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1671767700-0fc8982fb7cd"
+        ],
+        "context": 10
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1695599700-a89e89858185",
+          "HIST-BTC-SHORT-MOT-1705103700-a89e89858185"
+        ],
+        "B": [
+          "HIST-BTC-SHORT-MOT-1661514900-a89e89858185"
+        ],
+        "context": 11
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1663286100-a89e89858185"
+        ],
+        "B": [],
+        "context": 12
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1692143700-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 13
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1653551700-0fc8982fb7cd",
+          "HIST-ETH-SHORT-MOT-1713052500-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 14
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1636617300-a48380459835"
+        ],
+        "B": [
+          "HIST-BTC-LONG-MOT-1687161300-a48380459835"
+        ],
+        "context": 15
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1618358100-dc0a8ed049a1",
+          "HIST-BTC-LONG-MOT-1717962900-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 16
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1636559700-dc0a8ed049a1",
+          "HIST-ETH-LONG-MOT-1660535700-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 17
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1613861700-541bc3720c97"
+        ],
+        "B": [],
+        "context": 19
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1663073700-c05877f0d46f",
+          "HIST-BTC-LONG-MOT-1717782900-c05877f0d46f"
+        ],
+        "B": [],
+        "context": 20
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1696319700-a48380459835"
+        ],
+        "B": [],
+        "context": 22
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1696204500-dc0a8ed049a1",
+          "HIST-BTC-LONG-MOT-1718034900-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 23
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-LONG-MOT-1687305300-dc0a8ed049a1"
+        ],
+        "context": 24
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1614038100-a48380459835",
+          "HIST-BTC-LONG-MOT-1660535700-a48380459835",
+          "HIST-BTC-LONG-MOT-1730822100-a48380459835"
+        ],
+        "B": [
+          "HIST-BTC-LONG-MOT-1678751700-a48380459835"
+        ],
+        "context": 25
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1678751700-a48380459835"
+        ],
+        "B": [],
+        "context": 26
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-LONG-MOT-1696420500-a48380459835"
+        ],
+        "context": 27
+      }
+    ],
+    "REACTION": [
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1620676500-a89e89858185"
+        ],
+        "B": [],
+        "context": 0
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1655942100-a89e89858185",
+          "HIST-ETH-SHORT-MOT-1661529300-a89e89858185"
+        ],
+        "B": [],
+        "context": 1
+      },
+      {
+        "A": [],
+        "B": [
+          "HIST-ETH-SHORT-MOT-1667951700-0fc8982fb7cd"
+        ],
+        "context": 2
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1665834900-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 3
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1669172100-8a7ea2426311"
+        ],
+        "B": [],
+        "context": 4
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1664243700-95427edb0f6b"
+        ],
+        "B": [],
+        "context": 5
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1642690500-95427edb0f6b"
+        ],
+        "B": [],
+        "context": 6
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1642690500-95427edb0f6b",
+          "HIST-ETH-SHORT-MOT-1671764100-95427edb0f6b",
+          "HIST-ETH-SHORT-MOT-1678647300-95427edb0f6b"
+        ],
+        "B": [],
+        "context": 7
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1654905300-a89e89858185"
+        ],
+        "B": [],
+        "context": 8
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1667951700-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 9
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1671767700-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 10
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1661514900-a89e89858185",
+          "HIST-BTC-SHORT-MOT-1695599700-a89e89858185",
+          "HIST-BTC-SHORT-MOT-1705103700-a89e89858185"
+        ],
+        "B": [],
+        "context": 11
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1663286100-a89e89858185"
+        ],
+        "B": [],
+        "context": 12
+      },
+      {
+        "A": [
+          "HIST-BTC-SHORT-MOT-1692143700-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 13
+      },
+      {
+        "A": [
+          "HIST-ETH-SHORT-MOT-1653551700-0fc8982fb7cd",
+          "HIST-ETH-SHORT-MOT-1713052500-0fc8982fb7cd"
+        ],
+        "B": [],
+        "context": 14
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1636617300-a48380459835",
+          "HIST-BTC-LONG-MOT-1687161300-a48380459835"
+        ],
+        "B": [],
+        "context": 15
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1618358100-dc0a8ed049a1",
+          "HIST-BTC-LONG-MOT-1717962900-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 16
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1636559700-dc0a8ed049a1",
+          "HIST-ETH-LONG-MOT-1660535700-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 17
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1613861700-541bc3720c97"
+        ],
+        "B": [],
+        "context": 19
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1663073700-c05877f0d46f",
+          "HIST-BTC-LONG-MOT-1717782900-c05877f0d46f"
+        ],
+        "B": [],
+        "context": 20
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1610074500-c05877f0d46f"
+        ],
+        "B": [],
+        "context": 21
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1696319700-a48380459835"
+        ],
+        "B": [],
+        "context": 22
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1696204500-dc0a8ed049a1",
+          "HIST-BTC-LONG-MOT-1718034900-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 23
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1687305300-dc0a8ed049a1"
+        ],
+        "B": [],
+        "context": 24
+      },
+      {
+        "A": [
+          "HIST-BTC-LONG-MOT-1614038100-a48380459835",
+          "HIST-BTC-LONG-MOT-1660535700-a48380459835",
+          "HIST-BTC-LONG-MOT-1678751700-a48380459835",
+          "HIST-BTC-LONG-MOT-1730822100-a48380459835"
+        ],
+        "B": [],
+        "context": 25
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1678751700-a48380459835"
+        ],
+        "B": [],
+        "context": 26
+      },
+      {
+        "A": [
+          "HIST-ETH-LONG-MOT-1696420500-a48380459835"
+        ],
+        "B": [],
+        "context": 27
+      }
+    ]
+  }
+}

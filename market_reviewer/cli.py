@@ -88,12 +88,19 @@ def build_parser() -> argparse.ArgumentParser:
     history_status = subparsers.add_parser("historical-replay-status", help="Historical maturity; optional read-only LIVE count")
     history_status.add_argument("--output-dir", default="research/historical-replay")
     history_status.add_argument("--live-store", help="Explicit optional live store, read only")
+    smc_status = subparsers.add_parser("smc-sample-status", help="Read frozen SMC matched-sample readiness; no replay or runner mutation")
+    smc_status.add_argument("--root", default="research/historical-replay/matched-smc-contrast.v1-verified", help="Existing frozen matched research output directory")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "smc-sample-status":
+        import json
+        from .smc_sample_status import smc_sample_status
+        print(json.dumps(smc_sample_status(Path(args.root)), indent=2, sort_keys=True))
+        return 0
     if args.command in {"historical-replay", "historical-replay-batch", "historical-replay-status"}:
         import json
         from .historical_replay import refresh_summary, run_batch, run_window
