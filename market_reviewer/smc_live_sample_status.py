@@ -86,6 +86,18 @@ def _frozen_live(record):
     snapshot = next(iter(unique.values()))
     # Optional archived origin evidence only. Never write/backfill this field or search later snapshots.
     state = snapshot.get("smc_state")
+    frozen = snapshot.get("live_smc_frozen_context")
+    if frozen is not None:
+        if not isinstance(frozen, dict) or frozen.get("schema") != "live-smc-frozen-context.v1":
+            raise ValueError("INVALID_LIVE_FROZEN_CONTEXT")
+        if frozen.get("classification_status") != "CLASSIFIABLE" or frozen.get("missing_fields") != []:
+            raise ValueError("INCOMPLETE_LIVE_FROZEN_CONTEXT")
+        if (frozen.get("origin_id") != record["tracker_id"] or frozen.get("observation_number") != record["origin_observation"]
+                or frozen.get("symbol") != record["symbol"] or frozen.get("direction") != record["direction"]
+                or frozen.get("origin_timestamp") != stamp or frozen.get("frozen_at") != stamp + 300
+                or frozen.get("available_at") != stamp + 300):
+            raise ValueError("LIVE_FROZEN_IDENTITY_OR_TIME_MISMATCH")
+        state = frozen.get("smc_state")
     if not isinstance(state, dict) or state.get("schema") != "smc-hybrid-outcome.v1":
         raise ValueError("MISSING_FROZEN_HYBRID_SMC_STATE")
     cp = stamp + 300

@@ -428,7 +428,16 @@ def _apply_symbol_observation(
                 append_snapshot(before_record, candidate, updated_at=None)
                 _mark_context_break(before_record, candidate)
         elif is_eligible_origin(candidate):
+            existing_ids = {r.get("tracker_id") for r in store.get("records", [])}
             upsert_tracker(store, candidate, updated_at=None)
+            # Capture once, after the existing origin decision. Never enrich old records.
+            from .live_smc_frozen_context import capture_live_smc_context
+            for record in store.get("records", []):
+                if record.get("tracker_id") not in existing_ids:
+                    record["snapshots"][0]["live_smc_frozen_context"] = capture_live_smc_context(
+                        record, review, opportunity_snapshot,
+                        frames["M5"].latest_closed_candle_timestamp,
+                    )
     after_record = _matching_record(store, symbol, direction=direction)
     after_snapshot_count = len(after_record.get("snapshots", [])) if after_record else 0
     latest = after_record.get("snapshots", [])[-1] if after_record and after_record.get("snapshots") else None
