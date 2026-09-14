@@ -90,6 +90,9 @@ def build_parser() -> argparse.ArgumentParser:
     history_status.add_argument("--live-store", help="Explicit optional live store, read only")
     smc_status = subparsers.add_parser("smc-sample-status", help="Read frozen SMC matched-sample readiness; no replay or runner mutation")
     smc_status.add_argument("--root", default="research/historical-replay/matched-smc-contrast.v1-verified", help="Existing frozen matched research output directory")
+    smc_status.add_argument("--live-store", default="research/missed-opportunities.json", help="Existing live independent episode store; read only")
+    smc_status.add_argument("--historical-outcomes", default="research/historical-replay/smc-hybrid-outcome.v1/outcome-join.json", help="Existing historical outcome join; read only")
+    smc_status.add_argument("--historical-only", action="store_true", help="Show the original historical-only status")
     return parser
 
 
@@ -99,7 +102,12 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "smc-sample-status":
         import json
         from .smc_sample_status import smc_sample_status
-        print(json.dumps(smc_sample_status(Path(args.root)), indent=2, sort_keys=True))
+        if args.historical_only:
+            status = smc_sample_status(Path(args.root))
+        else:
+            from .smc_live_sample_status import smc_live_sample_status
+            status = smc_live_sample_status(Path(args.root), Path(args.live_store), Path(args.historical_outcomes))
+        print(json.dumps(status, indent=2, sort_keys=True))
         return 0
     if args.command in {"historical-replay", "historical-replay-batch", "historical-replay-status"}:
         import json

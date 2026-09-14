@@ -159,7 +159,7 @@ class SMCSampleStatusTests(unittest.TestCase):
         self.assertEqual(expected, smc_sample_status(self.root))
 
     def test_fresh_process_output_deterministic(self):
-        cmd = [sys.executable, "-B", "-m", "market_reviewer.cli", "smc-sample-status", "--root", str(self.root)]
+        cmd = [sys.executable, "-B", "-m", "market_reviewer.cli", "smc-sample-status", "--historical-only", "--root", str(self.root)]
         first = subprocess.check_output(cmd, text=True)
         second = subprocess.check_output(cmd, text=True)
         self.assertEqual(first, second)
