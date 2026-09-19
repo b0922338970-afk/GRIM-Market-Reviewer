@@ -432,12 +432,18 @@ def _apply_symbol_observation(
             upsert_tracker(store, candidate, updated_at=None)
             # Capture once, after the existing origin decision. Never enrich old records.
             from .live_smc_frozen_context import capture_live_smc_context
+            from .live_hybrid_smc import build_live_hybrid_smc
             for record in store.get("records", []):
                 if record.get("tracker_id") not in existing_ids:
+                    produced = build_live_hybrid_smc(record, review, opportunity_snapshot, frames)
+                    research_opportunity = dict(opportunity_snapshot, smc_state=produced["smc_state"])
                     record["snapshots"][0]["live_smc_frozen_context"] = capture_live_smc_context(
-                        record, review, opportunity_snapshot,
+                        record, review, research_opportunity,
                         frames["M5"].latest_closed_candle_timestamp,
                     )
+                    record["snapshots"][0]["live_smc_frozen_context"]["producer"] = {
+                        k: v for k, v in produced.items() if k != "smc_state"
+                    }
     after_record = _matching_record(store, symbol, direction=direction)
     after_snapshot_count = len(after_record.get("snapshots", [])) if after_record else 0
     latest = after_record.get("snapshots", [])[-1] if after_record and after_record.get("snapshots") else None

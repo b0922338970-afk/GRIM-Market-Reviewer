@@ -14,6 +14,10 @@ from test_missed_opportunity_live_v426a import SNAPSHOT_TS, terminal_review, opp
 
 class LiveSMCFrozenContextTests(unittest.TestCase):
     def setUp(self):
+        producer = patch("market_reviewer.live_hybrid_smc.build_live_hybrid_smc",
+                         side_effect=lambda record, review, opportunity, frames: {"smc_state": opportunity.get("smc_state")})
+        producer.start()
+        self.addCleanup(producer.stop)
         self.review = terminal_review()
         self.review.update(Current_Phase="PULLBACK", Market_Regime="TREND_PULLBACK",
                            Structure_State={"D1": "BULLISH", "H4": "BULLISH"})
@@ -108,7 +112,8 @@ class LiveSMCFrozenContextTests(unittest.TestCase):
         store = self.apply()
         self.assertEqual(json.dumps([self.review, self.opp], sort_keys=True), before)
         r = {k: v for k, v in store["records"][0].items() if k != "outcomes"}
-        self.assertEqual(capture_live_smc_context(r, self.review, self.opp, SNAPSHOT_TS), self.payload(store))
+        self.assertEqual(capture_live_smc_context(r, self.review, self.opp, SNAPSHOT_TS),
+                         {k: v for k, v in self.payload(store).items() if k != "producer"})
 
     def test_deterministic_payload(self):
         self.complete_source()

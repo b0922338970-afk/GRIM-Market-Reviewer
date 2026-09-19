@@ -17,11 +17,11 @@ decision-time `opportunity_snapshot.smc_state` using `smc-hybrid-outcome.v1` plu
 the complete matching context. It deep-copies ancestry and descriptive fields;
 it never infers Hybrid MSS, BPR or Breaker from similar Production labels.
 
-Current limitation: the opportunity extractor does not produce that full Hybrid
-payload. This patch captures available inputs; it is not a reconstruction engine.
-Absent fields are permanently UNAVAILABLE with explicit missing_fields. Such an
-origin remains LIVE_NOT_CLASSIFIABLE, even if later evidence becomes available.
-The two legacy live origins remain unchanged and receive no payload.
+The live research path now invokes live-hybrid-smc-payload.v1 after creation and
+before capture. It uses the existing raw-prefix, single/cluster, Hybrid and zone
+engines plus the unchanged archival decision-context extractor. Missing inputs or
+engine errors remain UNAVAILABLE and are recorded in the frozen producer report.
+They are never filled later. The two legacy origins receive no payload.
 
 When complete source fields are supplied at origin creation, smc-sample-status
 automatically recognizes the wrapper and validates its embedded frozen state.
