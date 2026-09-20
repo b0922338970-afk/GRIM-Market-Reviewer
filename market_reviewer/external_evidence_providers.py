@@ -275,6 +275,46 @@ class BinanceUSDmExternalEvidenceProvider:
             except OSError as exc:
                 errors[key] = exc.__class__.__name__
         snapshot_timestamp = int(time.time()) if fetch_timestamp is None else fetch_timestamp
+
+        # Live provider timestamps can lead the local wall clock by a very small
+        # amount. Do not weaken no-hindsight validation: for live fetches only,
+        # allow the local clock to catch up before freezing the snapshot.
+        if fetch_timestamp is None:
+            provider_timestamps = []
+            current_oi = _dict_or_none(payloads.get("open_interest"))
+            premium = _dict_or_none(payloads.get("premium_index"))
+            oi_history = _list_or_empty(payloads.get("open_interest_history"))
+            funding_history = _list_or_empty(payloads.get("funding_history"))
+
+            if current_oi:
+                value = current_oi.get("time") or current_oi.get("timestamp")
+                if value is not None:
+                    provider_timestamps.append(int(value) // 1000)
+
+            if premium:
+                value = premium.get("time")
+                if value is not None:
+                    provider_timestamps.append(int(value) // 1000)
+
+            if oi_history:
+                value = oi_history[-1].get("timestamp")
+                if value is not None:
+                    provider_timestamps.append(int(value) // 1000)
+
+            if funding_history:
+                value = funding_history[-1].get("fundingTime")
+                if value is not None:
+                    provider_timestamps.append(int(value) // 1000)
+
+            latest_provider_timestamp = max(provider_timestamps, default=snapshot_timestamp)
+            clock_skew = latest_provider_timestamp - snapshot_timestamp
+
+            # Only absorb a one-second boundary race. Larger future timestamps
+            # remain future evidence and are rejected by build_external_market_evidence.
+            if clock_skew == 1:
+                time.sleep(1)
+                snapshot_timestamp = int(time.time())
+
         metrics: dict[str, dict[str, Any]] = {}
         metrics.update(normalize_open_interest(mapping, _dict_or_none(payloads.get("open_interest")), _list_or_empty(payloads.get("open_interest_history")), snapshot_timestamp))
         metrics.update(normalize_funding(mapping, _dict_or_none(payloads.get("premium_index")), _list_or_empty(payloads.get("funding_history")), snapshot_timestamp))
