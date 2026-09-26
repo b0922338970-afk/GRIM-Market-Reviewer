@@ -181,16 +181,20 @@ def is_eligible_origin(candidate: dict[str, Any]) -> bool:
     )
     if not production_terminal or candidate.get("new_legal_genesis_active") is True:
         return False
-    evidence = candidate.get("opportunity_evidence") or {}
-    if evidence.get("STRUCTURE") != "POSITIVE":
-        return False
-    if evidence.get("MOMENTUM") != "POSITIVE":
-        return False
-    if evidence.get("POSITIONING") != "POSITIVE" and evidence.get("LIQUIDITY") != "POSITIVE":
-        return False
-    risks = set(candidate.get("risk_signatures") or [])
-    return "HARD_RESEARCH_INVALIDATION" not in risks
 
+    risks = set(candidate.get("risk_signatures") or [])
+    if "HARD_RESEARCH_INVALIDATION" in risks:
+        return False
+
+    evidence = candidate.get("opportunity_evidence") or {}
+
+    score = 0
+    score += 2 if evidence.get("STRUCTURE") == "POSITIVE" else 0
+    score += 2 if evidence.get("MOMENTUM") == "POSITIVE" else 0
+    score += 1 if evidence.get("POSITIONING") == "POSITIVE" else 0
+    score += 1 if evidence.get("LIQUIDITY") == "POSITIVE" else 0
+
+    return score >= 4
 
 def build_origin_candidate(
     *,
