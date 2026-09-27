@@ -137,7 +137,8 @@ def smc_live_sample_status(root=DEFAULT_ROOT, live_store=DEFAULT_LIVE_STORE, his
               "HISTORICAL_ORIGINS": hist["total_independent_origins"], "LIVE_ORIGINS": NA,
               "TOTAL_INDEPENDENT_ORIGINS": NA, "LONG": NA, "SHORT": NA,
               "CLASSIFIABLE_LIVE_ORIGINS": NA, "UNCLASSIFIABLE_LIVE_ORIGINS": NA,
-              "OUTCOME_COMPLETE_LIVE_ORIGINS": NA, "live_origins": [], "excluded_records": [], "contrasts": {}}
+              "OUTCOME_COMPLETE_LIVE_ORIGINS": NA, "EXCLUDED_UNCLASSIFIABLE_LIVE_ORIGINS": NA,
+              "live_origins": [], "excluded_records": [], "contrasts": {}}
     origins, membership, hist_outcomes = {}, {}, {}
     try:
         freeze = json.loads((root / "freeze.json").read_bytes())
@@ -212,6 +213,7 @@ def smc_live_sample_status(root=DEFAULT_ROOT, live_store=DEFAULT_LIVE_STORE, his
         classified, live_records, live_outcomes = {}, {}, {}
         result["live_origins"] = []
     unclassified = set(live_records) - set(classified)
+    result["EXCLUDED_UNCLASSIFIABLE_LIVE_ORIGINS"] = len(unclassified) if not live_unknown else NA
     for name in CONTRASTS:
         historical = hist["contrasts"][name]
         groups = {}
@@ -233,7 +235,7 @@ def smc_live_sample_status(root=DEFAULT_ROOT, live_store=DEFAULT_LIVE_STORE, his
         def support(g, a):
             return len(g["historical"][a]) + len(g["live"][a])
         best = min(candidates, key=lambda g: (-min(support(g, "A"), support(g, "B")), -support(g, "A") - support(g, "B"), _canonical(g["context"]))) if candidates else None
-        unknown = live_unknown or bool(unclassified) or not historical_available
+        unknown = live_unknown or not historical_available
         cell = {"label": CONTRASTS[name], "context": best["context"] if best else NA,
                 "target_per_side": 5, "preferred_per_side": [8, 10], "LIVE_NOT_CLASSIFIABLE": len(unclassified) if not live_unknown else NA,
                 "historical": {}, "live": {}, "combined": {}, "known_classifiable_live": {}, "known_combined": {}, "outcome_complete": {}}
@@ -245,7 +247,7 @@ def smc_live_sample_status(root=DEFAULT_ROOT, live_store=DEFAULT_LIVE_STORE, his
             cell["historical"][a] = h if historical_available and best else NA
             cell["known_classifiable_live"][a] = l if not live_unknown else NA
             cell["known_combined"][a] = h + l if best else NA
-            cell["live"][a] = NA if live_unknown or unclassified else l
+            cell["live"][a] = NA if live_unknown else l
             cell["combined"][a] = NA if unknown or not best else h + l
             statuses = [_outcome_ready(hist_outcomes.get(i, {}), _identity(origins[i], True)[2]) for i in hids] + [live_outcomes[i] for i in lids]
             complete = sum(v is True for v in statuses)
