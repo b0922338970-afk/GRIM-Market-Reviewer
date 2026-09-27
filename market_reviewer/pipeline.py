@@ -183,7 +183,8 @@ def review_snapshot(path: Path, thesis_path: Path | None = None, enforce_replay_
     replayed_state = {}
     for symbol, frames in snapshot_frames.items():
         review, symbol_state = _review_symbol_with_native_replay(frames, previous.get(symbol), loaded_from)
-        reviews[symbol] = review
+        from .production_smc_context import enrich_review
+        reviews[symbol] = enrich_review(review, frames)
         replayed_state[symbol] = symbol_state
     if thesis_path:
         if replayed_state:
