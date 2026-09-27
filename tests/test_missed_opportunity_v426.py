@@ -134,9 +134,13 @@ class MissedOpportunityTrackerV426Tests(unittest.TestCase):
     def test_origin_contract_rejects_missing_momentum(self) -> None:
         self.assertFalse(is_eligible_origin(candidate(opportunity_evidence=evidence(MOMENTUM="NEUTRAL"))))
 
-    def test_origin_contract_rejects_without_positioning_or_liquidity(self) -> None:
+    def test_origin_contract_accepts_weighted_structure_momentum_without_positioning_or_liquidity(self) -> None:
         c = candidate(opportunity_evidence=evidence(POSITIONING="NEUTRAL", LIQUIDITY="NEUTRAL"))
-        self.assertFalse(is_eligible_origin(c))
+        # STRUCTURE + MOMENTUM supply the existing four-point threshold.
+        self.assertTrue(is_eligible_origin(c))
+        below_threshold = candidate(opportunity_evidence=evidence(
+            MOMENTUM="NEUTRAL", POSITIONING="NEUTRAL", LIQUIDITY="NEUTRAL"))
+        self.assertFalse(is_eligible_origin(below_threshold))
 
     def test_origin_contract_rejects_hard_research_invalidation(self) -> None:
         self.assertFalse(is_eligible_origin(candidate(risk_signatures=["HARD_RESEARCH_INVALIDATION"])))

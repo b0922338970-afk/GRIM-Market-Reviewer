@@ -80,11 +80,17 @@ class SMCLiveSampleStatusTests(unittest.TestCase):
         self.assertEqual((s["HISTORICAL_ORIGINS"], s["LIVE_ORIGINS"], s["TOTAL_INDEPENDENT_ORIGINS"]), (45, 2, 47))
         self.assertEqual(s["OUTCOME_COMPLETE_LIVE_ORIGINS"], 2)
         self.assertEqual(s["UNCLASSIFIABLE_LIVE_ORIGINS"], 2)
+        self.assertEqual(s["EXCLUDED_UNCLASSIFIABLE_LIVE_ORIGINS"], 2)
+        self.assertEqual(s["CLASSIFIABLE_LIVE_ORIGINS"], 0)
+        self.assertTrue(all(r["classification"] == "LIVE_NOT_CLASSIFIABLE" for r in s["live_origins"]))
         expected = {"MSS": (3, 1), "BOS": (1, 3), "FVG_BPR": (2, 0), "PARENT": (3, 1), "OB_BREAKER": (1, 0), "REACTION": (4, 0)}
         for k, v in s["contrasts"].items():
             self.assertEqual(tuple(v["historical"].values()), expected[k])
-            self.assertEqual(v["live"], {"A": NA, "B": NA})
-            self.assertEqual(v["combined"], {"A": NA, "B": NA})
+            # Zero members in the classifiable cohort, not zero SMC evidence.
+            self.assertEqual(v["LIVE_NOT_CLASSIFIABLE"], 2)
+            self.assertEqual(v["live"], {"A": 0, "B": 0})
+            self.assertEqual(v["combined"], v["historical"])
+            self.assertIs(v["MATCHED_SAMPLE_READY"], False)
 
     def test_checkpoints_are_not_independent_origins(self):
         r = self.record()
@@ -175,10 +181,22 @@ class SMCLiveSampleStatusTests(unittest.TestCase):
         self.assertEqual(self.status()["CLASSIFIABLE_LIVE_ORIGINS"], 0)
 
     def test_unknown_smc_label_not_zero_evidence(self):
-        r = self.record()
+        r = self.record(20)
         r["snapshots"][0]["smc_state"]["fields"]["MSS"] = "UNKNOWN"
         self.records = [r]
-        self.assertEqual(self.status()["contrasts"]["MSS"]["live"]["A"], NA)
+        s = self.status()
+        self.assertEqual(s["EXCLUDED_UNCLASSIFIABLE_LIVE_ORIGINS"], 1)
+        self.assertEqual(s["CLASSIFIABLE_LIVE_ORIGINS"], 0)
+        self.assertEqual(s["live_origins"][0]["classification"], "LIVE_NOT_CLASSIFIABLE")
+        self.assertEqual(s["contrasts"]["MSS"]["live"], {"A": 0, "B": 0})
+        self.assertEqual(r["snapshots"][0]["smc_state"]["fields"]["MSS"], "UNKNOWN")
+        # An excluded legacy origin must not poison a complete matched cohort.
+        self.populate()
+        self.records.append(r)
+        s = self.status()
+        self.assertEqual(s["EXCLUDED_UNCLASSIFIABLE_LIVE_ORIGINS"], 1)
+        self.assertEqual(s["contrasts"]["MSS"]["live"], {"A": 5, "B": 5})
+        self.assertIs(s["contrasts"]["MSS"]["MATCHED_SAMPLE_READY"], True)
 
     def test_duplicate_live_record_counted_once(self):
         r = self.record()
