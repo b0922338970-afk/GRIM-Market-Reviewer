@@ -1,0 +1,11 @@
+*
+!web/
+!web/index.html
+!web/app.js
+!web/styles.css
+!api/
+!api/snapshot.js
+!server/
+!server/public-snapshot.js
+!vercel.json
+!package.json
