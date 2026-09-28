@@ -1,6 +1,6 @@
 # Supabase Hosted Read Store
 
-Manual only. No Runner integration, RLS/schema migrations, retries, or execution API.
+Manual CLI plus the V4.6.4 post-COMPLETE hook. No RLS/schema migrations, retries, or execution API.
 The existing public snapshot validator runs before sending any data.
 
 ## Configuration
@@ -30,8 +30,9 @@ other failures use normalized codes. Exit code is 0 on success, 1 on failure.
 
 Destination: public.grim_website_snapshot; conflict key id; id always latest.
 Upsert columns: id, schema, generated_at, source_observation, stale_after_seconds,
-snapshot. updated_at remains database-managed; this code neither creates nor
-assumes an update trigger. Consumers use generated_at/source time for freshness.
+snapshot, updated_at. updated_at is the UTC timestamp corresponding to the public
+snapshot generated_at; no database update trigger is required. Consumers use
+generated_at/source time for freshness.
 Concurrent/manual writes are last-write-wins; no remote monotonic CAS is claimed.
 
 Legacy service_role JWT is sent in apikey and Authorization Bearer. A new

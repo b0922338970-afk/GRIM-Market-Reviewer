@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from datetime import datetime, timezone
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
@@ -75,7 +76,8 @@ class SupabasePublisher:
         key = os.environ[KEY_ENV]
         payload = {"id": "latest", **{k: snapshot[k] for k in (
             "schema", "generated_at", "source_observation", "stale_after_seconds")},
-                   "snapshot": snapshot}
+                   "snapshot": snapshot,
+                   "updated_at": datetime.fromtimestamp(snapshot["generated_at"], timezone.utc).isoformat()}
         headers = {"Content-Type": "application/json", "apikey": key,
                    "Prefer": "resolution=merge-duplicates,return=minimal",
                    "Content-Profile": "public"}

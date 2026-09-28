@@ -440,6 +440,7 @@ def _execute_ready_cycle(
         research_state_sha256=_sha256_or_none(config.research_tracker_path),
         recovery_payload=production_payload,
     )
+    _publish_completed_website(config, observation_number, preparation.get("canonical_checkpoint"), clock)
     try:
         from .notification_delivery import dispatch_completed_reviews
         dispatch_completed_reviews(production_payload.get("reviews", {}), config.output_dir / "notification-delivery.json")
@@ -452,6 +453,26 @@ def _execute_ready_cycle(
         "blocker": None,
         "next_scheduled_run": _next_interval_time(clock, config),
     }
+
+
+def _publish_completed_website(config: RunnerConfig, observation_number: int, checkpoint: int | None, clock: Clock) -> None:
+    # Imports, publishing and even logging are outside canonical persistence.
+    status, reason = "PUBLISH_FAILED", "HOOK_ERROR"
+    try:
+        from .website_publish_hook import publish_latest_after_complete, SAFE_REASONS
+        result = publish_latest_after_complete(config, observation_number, checkpoint, clock=clock)
+        allowed = {"PUBLISHED", "PUBLISH_FAILED", "NOT_CONFIGURED",
+                   "SKIPPED_SOURCE_MISMATCH", "SKIPPED_NOT_COMPLETE"}
+        status = result.get("status") if result.get("status") in allowed else "PUBLISH_FAILED"
+        reason = result.get("reason") if result.get("reason") in SAFE_REASONS else None
+    except Exception:
+        pass
+    try:
+        _append_runner_log(config.runner_log_path, {
+            "website_snapshot_publish": status, "observation": observation_number, "reason": reason,
+        })
+    except Exception:
+        pass
 
 
 def _resume_pending_research(config: RunnerConfig, research_executor: ResearchExecutor, clock: Clock) -> dict[str, Any] | None:
@@ -551,6 +572,7 @@ def _reconcile_observation_transactions(config: RunnerConfig, research_executor:
             research_state_sha256=_sha256_or_none(config.research_tracker_path),
         )
         _update_runner_state(config, clock, status="IDLE", pending_research=None, last_successful_observation=observation_number)
+        _publish_completed_website(config, observation_number, tx.get("canonical_checkpoint"), clock)
         return {"status": "PASS", "observation_number": observation_number, "recovery": "RESEARCH_ALREADY_PRESENT"}
     if identity_status == "MISMATCH":
         _update_runner_state(config, clock, status="BLOCKED", last_blocker=BLOCKED_RESEARCH_IDENTITY_MISMATCH, recovery_last_error="research observation identity mismatch")
@@ -591,6 +613,7 @@ def _reconcile_observation_transactions(config: RunnerConfig, research_executor:
             last_successful_observation=observation_number,
             successful_observations_delta=1,
         )
+        _publish_completed_website(config, observation_number, tx.get("canonical_checkpoint"), clock)
         return {"status": "PASS", "observation_number": observation_number, "recovery": PENDING_RESEARCH_RECOVERY}
     return None
 

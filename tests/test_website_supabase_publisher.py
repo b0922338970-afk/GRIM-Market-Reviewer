@@ -69,7 +69,8 @@ class SupabasePublisherTests(unittest.TestCase):
         self.assertEqual(request.method, "POST")
         payload = json.loads(request.data)
         self.assertEqual(set(payload), {"id", "schema", "generated_at", "source_observation",
-                                       "stale_after_seconds", "snapshot"})
+                                       "stale_after_seconds", "snapshot", "updated_at"})
+        self.assertEqual(payload["updated_at"], "1970-01-01T00:18:20+00:00")
         self.assertEqual(payload["id"], "latest")
         self.assertEqual(payload["snapshot"], self.snapshot)
         for field in ("schema", "generated_at", "source_observation", "stale_after_seconds"):
