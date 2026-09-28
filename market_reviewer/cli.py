@@ -25,6 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers = parser.add_subparsers(dest="command")
     notifications = subparsers.add_parser("notification-status", help="Read delivery journal; never sends messages")
     notifications.add_argument("--path", default="artifact/notification-delivery.json")
+    telegram = subparsers.add_parser("telegram-status", help="Validate Telegram environment locally; never sends")
+    telegram.add_argument("--path", default="artifact/notification-delivery.json")
+    telegram_test = subparsers.add_parser("telegram-test-send", help="Explicit synthetic non-actionable Telegram test")
+    telegram_test.add_argument("--test-id", required=True, help="Reuse the same ID to suppress duplicate test sends")
+    telegram_test.add_argument("--path", default="artifact/notification-delivery.json")
     review = subparsers.add_parser("review-external", help="Review an existing DATA_READY snapshot")
     review.add_argument("snapshot", help="Path to market-data.v1 JSON artifact")
     review.add_argument("--thesis", help="Optional previous thesis JSON path")
@@ -101,6 +106,14 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command in {"telegram-status", "telegram-test-send"}:
+        import json
+        from .telegram_activation import telegram_status, telegram_test_send
+        result = telegram_status(Path(args.path)) if args.command == "telegram-status" else telegram_test_send(args.test_id, Path(args.path))
+        print(json.dumps(result, indent=2, sort_keys=True))
+        if args.command == "telegram-status":
+            return 0
+        return 0 if result.get("records") and all(r["status"] in {"DELIVERED", "DUPLICATE_SUPPRESSED"} for r in result["records"]) else 1
     if args.command == "notification-status":
         import json
         from .notification_delivery import notification_status

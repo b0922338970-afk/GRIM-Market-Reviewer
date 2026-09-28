@@ -110,7 +110,7 @@ class NotificationTests(unittest.TestCase):
 
     def test_adapters(self):
         cases = {
-            'TELEGRAM': {'TOKEN': 'fake', 'CHAT_ID': 'fake-chat'},
+            'TELEGRAM': {'TOKEN': '123:fake_test_token', 'CHAT_ID': '-123'},
             'DISCORD': {'URL': 'https://discord.com/api/webhooks/fake'},
             'LINE': {'TOKEN': 'fake', 'TO': 'fake-user'},
             'WEBHOOK': {'URL': 'https://example.invalid/hook'}}
@@ -190,8 +190,8 @@ class NotificationTests(unittest.TestCase):
         self.assertEqual(cfg.research_tracker_path.read_text(), 'research-final')
 
     def test_telegram_provider_rejection(self):
-        self.env = {'GRIM_NOTIFY_TELEGRAM_ENABLED': 'true', 'GRIM_NOTIFY_TELEGRAM_TOKEN': 'fake',
-                    'GRIM_NOTIFY_TELEGRAM_CHAT_ID': 'fake'}
+        self.env = {'GRIM_NOTIFY_TELEGRAM_ENABLED': 'true', 'GRIM_NOTIFY_TELEGRAM_TOKEN': '123:fake_test_token',
+                    'GRIM_NOTIFY_TELEGRAM_CHAT_ID': '-123'}
         self.transport.return_value = (200, b'{"ok":false}')
         self.assertEqual(self.run_delivery()['records'][0]['status'], 'DELIVERY_FAILED')
 

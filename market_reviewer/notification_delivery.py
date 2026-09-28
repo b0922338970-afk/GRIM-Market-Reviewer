@@ -57,6 +57,10 @@ def adapter_request(channel, env, packet, identity):
     text = render_message(packet)
     headers = {"Content-Type": "application/json"}
     if channel == "TELEGRAM":
+        from .telegram_activation import telegram_config
+        config = telegram_config(env)
+        if not config["credentials_valid"]:
+            return None, "INVALID_TELEGRAM_CONFIG"
         url = "https://api.telegram.org/bot" + env[prefix + "TOKEN"] + "/sendMessage"
         body = {"chat_id": env[prefix + "CHAT_ID"], "text": text}
         limit = 4096
@@ -108,24 +112,13 @@ def read_journal(path):
     return data
 
 
-def deliver(packet, path=DEFAULT_JOURNAL, *, env=None, transport=None, clock=time.time):
+def _dispatch(identity, request_factory, path=DEFAULT_JOURNAL, *, channels=CHANNELS, transport=None, clock=time.time):
     """Fail-open to caller, fail-closed to sending when durable dedupe is unavailable."""
-    env = os.environ if env is None else env
     transport = http_transport if transport is None else transport
     path = Path(path)
     lock = path.with_suffix(path.suffix + ".lock")
     owned = False
     try:
-        if packet.get("schema") != "opportunity_alert.v1" or packet.get("review_state") not in LEVELS:
-            return {"status": "SKIPPED_INVALID_PACKET"}
-        expected = LEVELS[packet["review_state"]]
-        if expected == "SILENT":
-            return {"status": "SILENT"}
-        if packet.get("alert_level") != expected or packet.get("emit_alert") is not True:
-            return {"status": "SKIPPED_INVALID_PACKET"}
-        if not isinstance(packet.get("generated_at"), int) or packet["generated_at"] <= 0:
-            return {"status": "SKIPPED_INVALID_PACKET"}
-        identity = alert_identity(packet)
         path.parent.mkdir(parents=True, exist_ok=True)
         fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         os.close(fd)
@@ -133,12 +126,12 @@ def deliver(packet, path=DEFAULT_JOURNAL, *, env=None, transport=None, clock=tim
         journal = read_journal(path)
         records = journal["records"]
         results = []
-        for channel in CHANNELS:
+        for channel in channels:
             row = {"alert_identity": identity, "channel": channel, "attempted_at": int(clock()),
                    "status": None, "response_code": None, "error": None, "delivered_at": None}
             attempted = any(r["alert_identity"] == identity and r["channel"] == channel and
                             r["status"] in {"ATTEMPTED", "DELIVERED", "DELIVERY_FAILED"} for r in records)
-            request, reason = adapter_request(channel, env, packet, identity)
+            request, reason = request_factory(channel)
             if attempted:
                 row["status"] = "DUPLICATE_SUPPRESSED"
             elif reason:
@@ -180,6 +173,25 @@ def deliver(packet, path=DEFAULT_JOURNAL, *, env=None, transport=None, clock=tim
                 pass
 
 
+def deliver(packet, path=DEFAULT_JOURNAL, *, env=None, transport=None, clock=time.time):
+    env = os.environ if env is None else env
+    try:
+        if packet.get("schema") != "opportunity_alert.v1" or packet.get("review_state") not in LEVELS:
+            return {"status": "SKIPPED_INVALID_PACKET"}
+        expected = LEVELS[packet["review_state"]]
+        if expected == "SILENT":
+            return {"status": "SILENT"}
+        if packet.get("alert_level") != expected or packet.get("emit_alert") is not True:
+            return {"status": "SKIPPED_INVALID_PACKET"}
+        if not isinstance(packet.get("generated_at"), int) or packet["generated_at"] <= 0:
+            return {"status": "SKIPPED_INVALID_PACKET"}
+        identity = alert_identity(packet)
+        return _dispatch(identity, lambda channel: adapter_request(channel, env, packet, identity),
+                         path, transport=transport, clock=clock)
+    except Exception:
+        return {"status": "DELIVERY_FAILED", "error": "JOURNAL_OR_ROUTER_UNAVAILABLE"}
+
+
 def dispatch_completed_reviews(reviews, path):
     try:
         for review in reviews.values():
@@ -194,6 +206,8 @@ def notification_status(path=DEFAULT_JOURNAL, env=None):
     env = os.environ if env is None else env
     result = {"schema": SCHEMA, "enabled_channels": [c for c in CHANNELS if
               env.get("GRIM_NOTIFY_" + c + "_ENABLED", "").lower() == "true"]}
+    from .telegram_activation import telegram_config
+    result["telegram_config"] = telegram_config(env)
     try:
         rows = read_journal(Path(path))["records"]
         result.update(last_delivery=next((r for r in reversed(rows) if r["status"] == "DELIVERED"), None),
