@@ -8,6 +8,8 @@ from .website_read_model import build_website_read_model
 def build_parser():
     p=argparse.ArgumentParser(prog='grim-website'); s=p.add_subparsers(dest='command')
     s.add_parser('status',help='Print current website read model; no mutation')
+    s.add_parser('supabase-status',help='Check hosted snapshot configuration without network access')
+    s.add_parser('publish-supabase',help='Manually publish public snapshot to the hosted latest row')
     e=s.add_parser('export',help='Export one website snapshot'); e.add_argument('--output',default='artifact/website-read-model.json')
     public=s.add_parser('export-public',help='Atomically export public-safe website projection')
     public.add_argument('--output',default='artifact/website-public-snapshot.json')
@@ -18,6 +20,14 @@ def build_parser():
 def main(argv=None):
     p=build_parser(); a=p.parse_args(argv)
     if a.command=='status': print(json.dumps(build_website_read_model(),ensure_ascii=False,indent=2,sort_keys=True)); return 0
+    if a.command=='supabase-status':
+        from .website_supabase_publisher import supabase_status
+        print(json.dumps(supabase_status(),sort_keys=True)); return 0
+    if a.command=='publish-supabase':
+        from .website_supabase_publisher import publish_supabase
+        result=publish_supabase()
+        print(json.dumps(result,sort_keys=True))
+        return 0 if result['status']=='PUBLISHED' else 1
     if a.command=='export': path=Path(a.output); atomic_write_json(path,build_website_read_model()); print(path); return 0
     if a.command=='export-public':
         from .website_public_snapshot import export_public_snapshot
