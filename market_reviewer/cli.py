@@ -100,12 +100,23 @@ def build_parser() -> argparse.ArgumentParser:
     smc_status.add_argument("--live-store", default="research/missed-opportunities.json", help="Existing live independent episode store; read only")
     smc_status.add_argument("--historical-outcomes", default="research/historical-replay/smc-hybrid-outcome.v1/outcome-join.json", help="Existing historical outcome join; read only")
     smc_status.add_argument("--historical-only", action="store_true", help="Show the original historical-only status")
+    maturity = subparsers.add_parser("research-maturity", help="Read-only live Reviewer acceptance gates")
+    maturity.add_argument("--root", default="research/historical-replay/matched-smc-contrast.v1-verified")
+    maturity.add_argument("--live-store", default="research/missed-opportunities.json")
+    maturity.add_argument("--historical-outcomes", default="research/historical-replay/smc-hybrid-outcome.v1/outcome-join.json")
+    maturity.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "research-maturity":
+        import json
+        from .research_maturity import research_maturity, render_maturity
+        result = research_maturity(Path(args.root), Path(args.live_store), Path(args.historical_outcomes))
+        print(json.dumps(result, indent=2, sort_keys=True) if args.json else render_maturity(result))
+        return 0
     if args.command in {"telegram-status", "telegram-test-send"}:
         import json
         from .telegram_activation import telegram_status, telegram_test_send

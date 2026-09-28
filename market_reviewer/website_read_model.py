@@ -8,6 +8,7 @@ from .missed_opportunity_live import missed_opportunity_status
 from .notification_delivery import notification_status
 from .observation_runner import observation_runner_status
 from .smc_live_sample_status import smc_live_sample_status
+from .research_maturity import research_maturity
 SCHEMA='grim-website-read-model.v1'; SYMBOLS=('BTC','ETH')
 DEFAULT_REVIEW_STATE=Path('reviews/thesis-baseline.json'); DEFAULT_RUNNER_STATE=Path('artifact/observation-runner.json')
 DEFAULT_RESEARCH_STORE=Path('research/missed-opportunities.json'); DEFAULT_LIQUIDATION_ROOT=Path('artifact/liquidations')
@@ -116,16 +117,18 @@ def build_website_read_model(*,review_state_path:Path=DEFAULT_REVIEW_STATE,runne
     runner=_safe(lambda: observation_runner_status(Path(runner_state_path),state_path=Path(review_state_path),research_tracker_path=Path(research_store_path)))
     research=_safe(lambda: missed_opportunity_status(Path(research_store_path)))
     smc=_safe(lambda: smc_live_sample_status(Path(smc_root),Path(research_store_path),Path(historical_outcomes_path)))
+    maturity=_safe(lambda: research_maturity(Path(smc_root),Path(research_store_path),Path(historical_outcomes_path)))
     liq=_safe(lambda: _liquidation_status_read_only(Path(liquidation_root))); note=_safe(lambda: notification_status(Path(notification_journal_path)))
     return {'schema':SCHEMA,'generated_at':int(clock()),'read_only':True,
       'ui':{'language':'zh-TW','terminology':'ENGLISH_TERMS_WITH_CHINESE_OPERATIONS','labels':{'refresh':'重新整理','details':'查看詳細','evidence':'證據完整度','research':'研究成熟度','last_updated':'最後更新'}},
       'source':{'review_observation':review_observation,'review_path':str(journal_path),'review_source':'recovery_payload.reviews'},
       'runtime':runner,'symbols':{s:_unwrap(_symbol_projection(s,{'symbols':reviews})) for s in SYMBOLS},
       'evidence':{'liquidation':_liquidation_projection(liq),'notification':note},
-      'research':{'tracker':research,'smc':smc,'summary':{
+      'research':{'tracker':research,'smc':smc,'acceptance':maturity,'summary':{
         'historical_origins':smc.get('HISTORICAL_ORIGINS') if isinstance(smc,dict) else None,
         'live_origins':smc.get('LIVE_ORIGINS') if isinstance(smc,dict) else None,
         'classifiable_live_origins':smc.get('CLASSIFIABLE_LIVE_ORIGINS') if isinstance(smc,dict) else None,
         'outcome_complete_live_origins':smc.get('OUTCOME_COMPLETE_LIVE_ORIGINS') if isinstance(smc,dict) else None,
-        'next_review_ready':smc.get('NEXT_REVIEW_READY') if isinstance(smc,dict) else None}},
+        'next_review_ready':{'SAMPLE_READY':maturity.get('FIRST_REVIEW_READY',False),
+                             'OUTCOME_READY':maturity.get('CALIBRATION_READY',False)}}},
       'execution':{'status':'RESERVED','connected':False,'mode':'NOT_CONNECTED_YET','message_zh':'Execution API 尚未接入；架構保留，未永久停用。'}}
