@@ -23,6 +23,8 @@ from .review_only import run_review_only
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="market-reviewer")
     subparsers = parser.add_subparsers(dest="command")
+    notifications = subparsers.add_parser("notification-status", help="Read delivery journal; never sends messages")
+    notifications.add_argument("--path", default="artifact/notification-delivery.json")
     review = subparsers.add_parser("review-external", help="Review an existing DATA_READY snapshot")
     review.add_argument("snapshot", help="Path to market-data.v1 JSON artifact")
     review.add_argument("--thesis", help="Optional previous thesis JSON path")
@@ -99,6 +101,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "notification-status":
+        import json
+        from .notification_delivery import notification_status
+        print(json.dumps(notification_status(Path(args.path)), indent=2, sort_keys=True))
+        return 0
     if args.command == "smc-sample-status":
         import json
         from .smc_sample_status import smc_sample_status

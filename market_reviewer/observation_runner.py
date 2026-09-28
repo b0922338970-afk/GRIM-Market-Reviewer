@@ -440,6 +440,11 @@ def _execute_ready_cycle(
         research_state_sha256=_sha256_or_none(config.research_tracker_path),
         recovery_payload=production_payload,
     )
+    try:
+        from .notification_delivery import dispatch_completed_reviews
+        dispatch_completed_reviews(production_payload.get("reviews", {}), config.output_dir / "notification-delivery.json")
+    except Exception:
+        pass  # Delivery is outside the completed Production/Research transaction.
     return {
         "observation_number": observation_number,
         "production_result": "PASS",
