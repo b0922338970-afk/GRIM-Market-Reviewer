@@ -166,6 +166,7 @@ def tactical_direction_shadow(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_L
         if not rows or conflicts:
             raise ValueError("INVALID_ARCHIVE")
         reviews = {}
+        exposures = {}
         for tx in journal.get("transactions", []):
             if tx.get("status") != "COMPLETE" or tx.get("sample_source") == "HISTORICAL_REPLAY":
                 continue
@@ -174,12 +175,24 @@ def tactical_direction_shadow(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_L
                 if key in reviews and reviews[key] != review:
                     raise ValueError("CONFLICTING_REVIEW")
                 reviews[key] = review
+                exposure = (tx.get("recovery_payload", {}).get("non_canonical_research_evidence") or {}).get("tactical_provenance", {}).get(symbol)
+                if key in exposures and exposures[key] != exposure:
+                    raise ValueError("CONFLICTING_EXPOSURE")
+                exposures[key] = exposure
         classified = []
         for row in rows:
             review = reviews.get((row["observation"], row["symbol"])) if row["source"] == "COMPLETE_JOURNAL" else None
             if review is None:
                 review = {"Swing_Bias": (row.get("evidence") or {}).get("SWING_BIAS")}
-            classified.append(classify_tactical(review, row["timestamp"] + 300, row["observation"], row["symbol"]))
+            item = classify_tactical(review, row["timestamp"] + 300, row["observation"], row["symbol"])
+            from .tactical_provenance import bind_tactical_identity
+            binding = bind_tactical_identity(review, exposures.get((row["observation"], row["symbol"])), row["timestamp"] + 300)
+            item["tactical_provenance_binding"] = binding
+            if binding["status"] == "BOUND":
+                item["state"] = "TACTICAL_CONFIRMED"
+                item["execution_trigger"] = "CONFIRMED"
+                item["missing_evidence"] = []
+            classified.append(item)
         if before != [p.read_bytes() for p in paths]:
             raise ValueError("SOURCE_CHANGED")
         end = max(r["checkpoint"] for r in classified)
@@ -195,6 +208,9 @@ def tactical_direction_shadow(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_L
                     counts["TACTICAL_"+d+"_CONTEXT"] = sum(r["tactical_direction"] == d and r["state"] != "TACTICAL_CONFIRMED" for r in cohort)
                     counts["TACTICAL_"+d+"_CONFIRMED"] = sum(r["tactical_direction"] == d and r["state"] == "TACTICAL_CONFIRMED" for r in cohort)
                     counts["COUNTER_TREND_"+d] = sum(r["tactical_direction"] == d and r["relationship"] == "COUNTER_TREND" for r in cohort)
+                    counts["TACTICAL_"+d+"_INCOMPLETE"] = sum(r["tactical_direction"] == d and r["state"] == "TACTICAL_INCOMPLETE" for r in cohort)
+                    counts["COUNTER_TREND_"+d+"_CONFIRMED"] = sum(r["tactical_direction"] == d and r["relationship"] == "COUNTER_TREND" and r["state"] == "TACTICAL_CONFIRMED" for r in cohort)
+                    counts["COUNTER_TREND_"+d+"_INCOMPLETE"] = sum(r["tactical_direction"] == d and r["relationship"] == "COUNTER_TREND" and r["state"] == "TACTICAL_INCOMPLETE" for r in cohort)
                 counts.update({state: sum(r["state"] == state for r in cohort) for state in
                                ("TACTICAL_NONE", "TACTICAL_CONTEXT", "TACTICAL_INCOMPLETE", "UNAVAILABLE")})
                 counts["missing_evidence"] = dict(sorted(Counter(m for r in cohort if r["state"] == "TACTICAL_INCOMPLETE" for m in r["missing_evidence"]).items()))

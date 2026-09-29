@@ -293,6 +293,13 @@ def execute_production_observation(preparation: dict[str, Any], observation_numb
         "production_hash": _sha256_or_none(state_path),
         "canonical_checkpoint": preparation.get("canonical_checkpoint"),
     }
+    # Independent research exposure never enters reviews, state hashes or eligibility.
+    try:
+        from .tactical_provenance import capture_noncanonical
+        payload["non_canonical_research_evidence"] = capture_noncanonical(
+            frames, reviews, preparation.get("canonical_checkpoint"))
+    except Exception:
+        pass
     return payload
 
 
