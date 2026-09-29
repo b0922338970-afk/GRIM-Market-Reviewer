@@ -57,6 +57,22 @@ def identity(kind, *parts):
     return kind + "-" + hashlib.sha256(data.encode()).hexdigest()[:24]
 
 
+def order_blocks_with_ancestry(frame, structure, displacements):
+    """Use the actual detector per cause, then verify its existing tail selection.
+
+    Each tuple obtains its parent from the detector invocation, never a positional
+    join, strength comparison, nearest timestamp, or inferred candle proximity.
+    """
+    pairs = []
+    for displacement in displacements:
+        pairs.extend((block, displacement) for block in
+                     rv.find_order_blocks(frame, structure, [displacement]))
+    retained = pairs[-8:]
+    if [block for block, _ in retained] != rv.find_order_blocks(frame, structure, displacements):
+        raise ValueError("OB_DETECTOR_ANCESTRY_PARITY_MISMATCH")
+    return retained
+
+
 def build_exposure(frames, review, checkpoint):
     """Re-run unchanged detectors over the legal prefix; no selected review edits.
 
@@ -113,13 +129,27 @@ def build_exposure(frames, review, checkpoint):
                         pool_identity_state="EXACT" if len(pool_ids) == 1 else "UNAVAILABLE",
                         producer="market_reviewer.reviewer.find_liquidity_events")
             result["liquidity_events"].append(item)
-        for kind, zones in (("FVG", rv.find_fvgs(frame, displacements)),
-                            ("OB", rv.find_order_blocks(frame, structure, displacements))):
-            for z in zones:
+        for kind, zones in (("FVG", [(z, None) for z in rv.find_fvgs(frame, displacements)]),
+                            ("OB", order_blocks_with_ancestry(frame, structure, displacements))):
+            for z, cause in zones:
                 data = asdict(z)
+                anchor = {k: data[k] for k in ("direction", "upper", "lower", "high", "low") if k in data}
+                if cause is not None:
+                    parent_id = identity("DISPLACEMENT", symbol, tf, cause.timestamp, cause.direction,
+                                         {"direction": cause.direction})
+                    anchor["related_displacement_event_id"] = parent_id
                 item = expose(tf, kind, z.formed_at, data,
-                              {k: data[k] for k in ("direction", "upper", "lower", "high", "low") if k in data})
+                              anchor)
                 item.update(direction=z.direction, setup_id=rv._setup_id(z) if kind == "FVG" and z.setup_type == "SETUP_FVG" else None)
+                if cause is not None:
+                    item.update(ancestry_version="ob-displacement-ancestry.v1",
+                        related_displacement_timestamp=cause.timestamp,
+                        related_displacement_direction=cause.direction,
+                        related_displacement_id=f"{tf}:{cause.timestamp}",
+                        related_displacement_event_id=parent_id,
+                        related_displacement_strength=cause.strength,
+                        related_displacement_body_ratio=cause.body_ratio,
+                        ancestry_producer="market_reviewer.reviewer.find_order_blocks")
                 result["zones"].append(item)
     matches = [d for d in result["raw_directional_displacement"] if d["selection_reason"] == "SELECTED_TEXT_MATCH"]
     for d in matches:
@@ -142,6 +172,33 @@ def capture_noncanonical(frames_by_symbol, reviews, checkpoint):
             captured[symbol] = {"schema": SCHEMA, "symbol": symbol, "checkpoint": checkpoint,
                                 "status": "UNAVAILABLE", "reason": "EXPOSURE_FAILED", "canonical": False}
     return {"schema": "non-canonical-tactical-research.v1", "tactical_provenance": captured}
+
+
+def corrected_ob_provenance_view(frames, review, checkpoint, persisted):
+    """Explicit read-only replay, rejected unless old detector payloads reproduce.
+
+    This is not called by runtime recovery or status: old records stay untouched.
+    Compare full legacy zone payloads with multiplicity before applying new IDs.
+    """
+    corrected = build_exposure(frames, review, checkpoint)
+    for key, value in persisted.items():
+        if key not in ("zones", "zone_identity_diagnostics") and corrected.get(key) != value:
+            raise ValueError("PERSISTED_SOURCE_REPLAY_MISMATCH")
+    legacy_zones = copy.deepcopy(corrected["zones"])
+    for zone in legacy_zones:
+        if zone["type"] != "OB":
+            continue
+        for key in list(zone):
+            if key.startswith("related_displacement_") or key in ("ancestry_version", "ancestry_producer"):
+                zone.pop(key)
+        evidence = zone["evidence"]
+        anchor = {k: evidence[k] for k in ("direction", "upper", "lower", "high", "low") if k in evidence}
+        zone["event_id"] = identity("OB", zone["symbol"], zone["timeframe"], zone["timestamp"], zone["direction"], anchor)
+    if sorted(map(_canonical_payload, legacy_zones)) != sorted(map(_canonical_payload, persisted["zones"])):
+        raise ValueError("PERSISTED_OB_REPLAY_MISMATCH")
+    return {"view": "CORRECTED_PROVENANCE_VIEW", "exposure": corrected,
+            "validation": exposure_validation(corrected, review, checkpoint),
+            "binding": bind_tactical_identity(review, corrected, checkpoint)}
 
 
 def exposure_validation(exposure, review, checkpoint):
@@ -171,6 +228,20 @@ def exposure_validation(exposure, review, checkpoint):
             if identical_duplicate:
                 return {"valid": False, "status": "EXPOSURE_VALIDATION_FAILED",
                         "reason": "DUPLICATE_EVENT_ID", "collection": key}
+        parents = {e["event_id"]: e for e in exposure["raw_directional_displacement"]}
+        for zone in exposure["zones"]:
+            if zone.get("ancestry_version") != "ob-displacement-ancestry.v1":
+                continue
+            parent = parents.get(zone.get("related_displacement_event_id"))
+            if (not parent or zone["type"] != "OB" or parent["timeframe"] != zone["timeframe"] or
+                parent["direction"] != zone["direction"] or parent["timestamp"] <= zone["timestamp"] or
+                zone["related_displacement_timestamp"] != parent["timestamp"] or
+                zone["related_displacement_direction"] != parent["direction"] or
+                zone["related_displacement_id"] != f"{parent['timeframe']}:{parent['timestamp']}" or
+                zone["related_displacement_strength"] != parent["evidence"]["strength"] or
+                zone["related_displacement_body_ratio"] != parent["evidence"]["body_ratio"] or
+                zone["evidence"]["displacement_strength"] != parent["evidence"]["body_ratio"]):
+                return {"valid": False, "status": "EXPOSURE_VALIDATION_FAILED", "reason": "OB_ANCESTRY_MISMATCH"}
         return {"valid": True, "status": "VALID", "reason": None}
     except (KeyError, TypeError, ValueError):
         return invalid
@@ -191,6 +262,7 @@ def bind_tactical_identity(review, exposure, checkpoint):
         out["validation_reason"] = validation["reason"]
         return out
     shadow = classify_tactical(review, checkpoint)
+    out["missing_evidence"] = copy.deepcopy(shadow["missing_evidence"])
     direction = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(shadow["tactical_direction"])
     h1 = _breaks(review, "H1", checkpoint)
     latest = [e for e in h1 if e["timestamp"] == max(x["timestamp"] for x in h1)] if h1 else []
@@ -236,5 +308,5 @@ def bind_tactical_identity(review, exposure, checkpoint):
                "reclaim": rec[0]["event_id"], "M15": m["event_id"], "setup": z["setup_id"],
                "retest": review["Eligible_Retest_Evidence_ID"]}
     out.update(status="BOUND", anchors=anchors, reason=None,
-               tactical_setup_id=identity("TACTICAL", review["Symbol"], direction, anchors))
+               tactical_setup_id=identity("TACTICAL", review["Symbol"], direction, anchors), missing_evidence=[])
     return out
