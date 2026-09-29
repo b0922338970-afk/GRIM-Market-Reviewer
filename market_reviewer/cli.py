@@ -111,12 +111,24 @@ def build_parser() -> argparse.ArgumentParser:
     sides.add_argument("--root", default="research/historical-replay/matched-smc-contrast.v1-verified")
     sides.add_argument("--historical-outcomes", default="research/historical-replay/smc-hybrid-outcome.v1/outcome-join.json")
     sides.add_argument("--json", action="store_true")
+    timeframe_audit = subparsers.add_parser("timeframe-direction-audit", help="Read-only routing and timeframe role audit")
+    timeframe_audit.add_argument("--journal", default="artifact/observation-commit-journal.json")
+    timeframe_audit.add_argument("--live-store", default="research/missed-opportunities.json")
+    timeframe_audit.add_argument("--root", default="research/historical-replay/matched-smc-contrast.v1-verified")
+    timeframe_audit.add_argument("--historical-outcomes", default="research/historical-replay/smc-hybrid-outcome.v1/outcome-join.json")
+    timeframe_audit.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "timeframe-direction-audit":
+        import json
+        from .timeframe_direction_audit import timeframe_direction_audit, render_audit
+        result = timeframe_direction_audit(Path(args.journal), Path(args.live_store), Path(args.root), Path(args.historical_outcomes))
+        print(json.dumps(result, indent=2, sort_keys=True) if args.json else render_audit(result))
+        return 0
     if args.command == "research-side-diagnostics":
         import json
         from .research_side_diagnostics import research_side_diagnostics, render_diagnostics
