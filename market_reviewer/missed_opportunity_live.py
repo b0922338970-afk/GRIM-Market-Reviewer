@@ -397,6 +397,15 @@ def _apply_symbol_observation(
     observation_number: int,
     preexisting_store: dict[str, Any],
 ) -> dict[str, Any]:
+    # Neutral/unknown bias is not a third independent opportunity direction.
+    if _direction_from_review(review) == "NONE":
+        return {
+            "direction": "NONE", "candidate_status": "NO_DIRECTION_CANDIDATE",
+            "eligible_origin": None, "eligibility_evaluation": "SKIPPED",
+            "tracker_active": "NO", "tracker_id": None,
+            "current_snapshot_added": "NO", "snapshot_count": 0,
+            "production_conversion": "NO",
+        }
     candidate = build_tracker_candidate_from_observation(
         symbol=symbol,
         review=review,
@@ -541,9 +550,11 @@ def _new_legal_genesis_timestamp(review: dict[str, Any]) -> int | None:
 
 def _direction_from_review(review: dict[str, Any]) -> str:
     bias = str(review.get("Swing_Bias") or "").upper()
+    if bias == "BULLISH":
+        return "LONG"
     if bias == "BEARISH":
         return "SHORT"
-    return "LONG"
+    return "NONE"
 
 
 def _latest_closed(frames: dict[str, MarketDataFrame]) -> int:

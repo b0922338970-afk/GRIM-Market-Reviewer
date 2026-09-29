@@ -30,7 +30,7 @@ class TimeframeDirectionAuditTests(unittest.TestCase):
 
     def test_mapping_reproduces_default(self):
         c = routing_contract()
-        self.assertEqual(c['research']['mapping']['NONE'], 'LONG')
+        self.assertEqual(c['research']['mapping']['NONE'], 'NONE')
         self.assertEqual(c['research']['mapping']['BEARISH'], 'SHORT')
         self.assertIn('else "NONE"', c['reviewer']['branches'][0][1])
 
@@ -71,7 +71,7 @@ class TimeframeDirectionAuditTests(unittest.TestCase):
         example = r['tactical_short_context'][symbol]['examples'][0]
         self.assertTrue(example['flags']['H1_BEARISH_MSS'])
         self.assertEqual(example['reviewer_direction'], 'NONE')
-        self.assertEqual(example['research_direction'], 'LONG')
+        self.assertEqual(example['research_direction'], 'NONE')
         self.assertEqual(r['bias'][symbol]['NONE'], 1)
 
     def test_open_candle_excluded(self):

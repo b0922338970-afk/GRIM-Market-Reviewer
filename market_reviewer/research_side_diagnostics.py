@@ -75,9 +75,10 @@ def _candidate_rows(journal, records):
             evidence = snapshot.get("opportunity_evidence")
             if key not in rows:
                 rows[key] = {"observation": obs, "symbol": record["symbol"], "timestamp": stamp,
-                    "direction": record["direction"], "bias": None, "candidate": {},
+                    "direction": _direction_from_review({"Swing_Bias": (evidence or {}).get("SWING_BIAS")}) if isinstance((evidence or {}).get("SWING_BIAS"), str) else None,
+                    "persisted_origin_direction": record["direction"], "bias": (evidence or {}).get("SWING_BIAS"), "candidate": {},
                     "evidence": evidence, "source": "TRACKER_SNAPSHOT_ONLY"}
-            elif rows[key]["timestamp"] != stamp or rows[key]["direction"] != record["direction"]:
+            elif rows[key]["timestamp"] != stamp:
                 conflicts.add(key)
             elif rows[key]["evidence"] is not None and rows[key]["evidence"] != evidence:
                 conflicts.add(key)
@@ -112,7 +113,9 @@ def _facts(row):
 
 def _segment(rows, origins, cutoff, end):
     selected = [r for r in rows if cutoff <= r["timestamp"] <= end]
-    result = {"start": cutoff, "end": end, "sides": {}}
+    result = {"start": cutoff, "end": end, "sides": {},
+              "no_direction_non_candidates": sum(r["direction"] == "NONE" for r in selected),
+              "direction_unavailable": sum(r["direction"] is None for r in selected)}
     for direction in ("LONG", "SHORT"):
         candidates = [r for r in selected if r["direction"] == direction]
         facts = [_facts(r) for r in candidates]
@@ -158,6 +161,8 @@ def _segment(rows, origins, cutoff, end):
 def research_side_diagnostics(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_LIVE_STORE,
                               root=DEFAULT_ROOT, historical_outcomes=DEFAULT_OUTCOMES):
     result = {"schema": "research-side-diagnostics.v1", "read_only": True,
+        "view": "CORRECTED_DIAGNOSTIC_VIEW",
+        "origin_count_authority": "PERSISTED_ORIGINS_UNCHANGED; NOT_RECLASSIFIED",
         "assessment": "INSUFFICIENT_EVIDENCE_TO_DIAGNOSE", "assessment_reasons": [],
         "segments": {}}
     try:
@@ -170,6 +175,18 @@ def research_side_diagnostics(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_L
             return result
         ids = {o["origin_id"] for o in gate["origin_audit"]}
         records = {r["tracker_id"]: r for r in store["records"] if r.get("tracker_id") in ids}
+        legacy_audit = []
+        for eid, record in sorted(records.items()):
+            snapshots = [s for s in record.get("snapshots", []) if
+                s.get("observation_number") == record.get("origin_observation") and
+                s.get("snapshot_timestamp") == record.get("origin_snapshot_timestamp")]
+            biases = {(s.get("opportunity_evidence") or {}).get("SWING_BIAS") for s in snapshots}
+            bias = next(iter(biases)) if len(biases) == 1 else None
+            legacy_audit.append({"origin_id": eid, "persisted_direction": record["direction"],
+                "creation_swing_bias": bias or UNAVAILABLE,
+                "routing_artifact": "LEGACY_DIRECTION_ROUTING_ARTIFACT" if record["direction"] == "LONG" and bias == "NONE" else None,
+                "classifiable_complete": eid in gate["sides"][record["direction"]]["included_origins"]})
+        result["legacy_origin_audit"] = legacy_audit
         origins = []
         for o in gate["origin_audit"]:
             record = records[o["origin_id"]]
@@ -189,7 +206,7 @@ def research_side_diagnostics(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_L
             "first_timestamp": start, "last_timestamp": end, "missing_symbol_observations": missing,
             "conflicting_rows": conflicts, "unknown_direction_rows": sum(r["direction"] is None for r in rows),
             "scope": "AVAILABLE_FORWARD_LIVE_ARCHIVE; NOT_ASSUMED_FULL_RETENTION"},
-            direction_contract="EXISTING_RESEARCH_ROUTER: BEARISH -> SHORT; other explicit Swing_Bias -> LONG",
+            direction_contract="BULLISH -> LONG; BEARISH -> SHORT; other explicit bias -> NONE (non-candidate)",
             gate={k: gate[k] for k in ("FIRST_REVIEW", "CALIBRATION", "first_review_reasons")})
         for name, cutoff in (("latest_24H", end - 86400), ("latest_72H", end - 259200), ("full_window", start)):
             result["segments"][name] = _segment(rows, origins, cutoff, end)
@@ -207,9 +224,11 @@ def research_side_diagnostics(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_L
 
 
 def render_diagnostics(result):
-    lines = ["LIVE SIDE DIAGNOSTICS"]
+    lines = ["LIVE SIDE DIAGNOSTICS", result.get("view", "CORRECTED_DIAGNOSTIC_VIEW"),
+             "Origin counts remain persisted; candidates use corrected routing."]
     for name, segment in result["segments"].items():
         lines.append(name)
+        lines.append(f"NONE non-candidate={segment['no_direction_non_candidates']}")
         for side, row in segment["sides"].items():
             lines.append(f"{side}: candidate={row['candidate']} eligible={row['research_origin_eligible']['count']} origin={row['origin_created']} classifiable={row['classifiable']} complete={row['outcome_complete']}")
     full = result["segments"].get("full_window", {}).get("sides", {}).get("SHORT", {})

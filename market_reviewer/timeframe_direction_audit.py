@@ -28,7 +28,8 @@ def routing_contract():
     review_code, review_line = inspect.getsourcelines(reviewer.review_symbol)
     preferred = [(review_line + i, text.strip()) for i, text in enumerate(review_code) if 'Preferred_Direction=' in text]
     return {
-        "flag": "DIRECTION_DEFAULT_ASYMMETRY",
+        "flag": "DIRECTION_CONTRACT_ALIGNED",
+        "legacy_contract": "DIRECTION_DEFAULT_ASYMMETRY: pre-V4.7.3 research non-BEARISH defaulted LONG; persisted records unchanged",
         "research": {"file": "market_reviewer/missed_opportunity_live.py",
             "function": "_direction_from_review", "line": line, "code": ''.join(code).strip(),
             "mapping": {b: _direction_from_review({"Swing_Bias": b}) for b in BIAS_BUCKETS},
@@ -102,6 +103,7 @@ def timeframe_direction_audit(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_L
                               root=DEFAULT_ROOT, historical_outcomes=DEFAULT_OUTCOMES):
     result = {"schema": "timeframe-direction-audit.v1", "read_only": True,
         "direction_routing": routing_contract(), "timeframe_roles": timeframe_roles(),
+        "view": "CORRECTED_DIAGNOSTIC_VIEW",
         "assessment": "INSUFFICIENT_EVIDENCE", "assessment_evidence": [], "segments": {}}
     try:
         paths = [Path(journal_path), Path(live_store)]
@@ -167,7 +169,7 @@ def timeframe_direction_audit(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_L
             "last_observation": max(r["observation"] for r in rows), "latest_open_timestamp": end,
             "count_unit": "SYMBOL_OBSERVATION_PRESENCE_NOT_INDEPENDENT_SAMPLES_OR_DISTINCT_EVENTS"}
         result["assessment"] = "MIXED_CAUSE"
-        result["assessment_evidence"] = ["DIRECTION_DEFAULT_ASYMMETRY: research NONE->LONG while Reviewer NONE->NONE",
+        result["assessment_evidence"] = ["LEGACY_DIRECTION_DEFAULT_ASYMMETRY: persisted pre-V4.7.3 routing not rewritten; corrected view NONE->NONE",
             "MULTI_TIMEFRAME_ROLE_CONTRACT_MISSING: no counter-HTF tactical-origin direction authority",
             "These are routing/design limitations, not proof that rejected SHORT trades would qualify or profit"]
         result["limitations"] = ["Exported FVG/OB/liquidity and structure timelines are truncated, not raw detector universe",
@@ -183,7 +185,7 @@ def timeframe_direction_audit(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_L
 
 
 def render_audit(result):
-    lines = ["BIAS DISTRIBUTION"]
+    lines = ["CORRECTED_DIAGNOSTIC_VIEW", "Persisted origins are not reclassified.", "BIAS DISTRIBUTION"]
     for name, segment in result["segments"].items():
         lines.append(name + ": " + json.dumps(segment["bias"], sort_keys=True))
     lines.extend(["DIRECTION ROUTING", json.dumps(result["direction_routing"], sort_keys=True),

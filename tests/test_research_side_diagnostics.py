@@ -148,12 +148,26 @@ class SideDiagnosticsTests(unittest.TestCase):
         self.assertEqual(r['segments'], {})
         self.assertEqual(r['assessment_reasons'], ['SOURCE_UNAVAILABLE_INVALID_OR_CHANGED'])
 
-    def test_none_bias_is_existing_long_route_not_short_rejection(self):
+    def test_none_bias_is_non_candidate_not_short_rejection(self):
         self.f.records = []
         self.transactions = [self.transactions[0]]
         review = next(iter(self.transactions[0]['recovery_payload']['reviews'].values()))
         review['Swing_Bias'] = 'NONE'
         sides = self.result()['segments']['full_window']['sides']
-        self.assertEqual(sides['LONG']['explicit_swing_bias_counts'], {'NONE': 1})
+        self.assertEqual(sides['LONG']['candidate'], 0)
         self.assertEqual(sides['SHORT']['candidate'], 0)
         self.assertEqual(sides['SHORT']['rejections'], [])
+
+    def test_legacy_neutral_origin_report_only(self):
+        r = self.f.records[0]
+        r['snapshots'][0]['opportunity_evidence']['SWING_BIAS'] = 'NONE'
+        next(iter(self.transactions[0]['recovery_payload']['reviews'].values()))['Swing_Bias'] = 'NONE'
+        before = copy.deepcopy(r)
+        result = self.result()
+        self.assertEqual(result['view'], 'CORRECTED_DIAGNOSTIC_VIEW')
+        row = next(o for o in result['legacy_origin_audit'] if o['origin_id'] == r['tracker_id'])
+        self.assertEqual(row['routing_artifact'], 'LEGACY_DIRECTION_ROUTING_ARTIFACT')
+        self.assertEqual(row['persisted_direction'], 'LONG')
+        self.assertTrue(row['classifiable_complete'])
+        self.assertEqual(self.f.records[0], before)
+        self.assertEqual(result['segments']['full_window']['no_direction_non_candidates'], 1)
