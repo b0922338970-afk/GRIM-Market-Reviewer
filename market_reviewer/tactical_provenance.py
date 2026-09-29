@@ -15,6 +15,43 @@ from .tactical_direction_shadow import _breaks, classify_tactical
 SCHEMA = "tactical-evidence-provenance.v1"
 
 
+def _canonical_payload(value):
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def deduplicate_zones(exposure):
+    """Private corrected view: only entire, identical-ID payloads may collapse.
+
+    Different payloads under one ID are all retained, including any identical
+    copies within the colliding group. Identity collisions must remain visible.
+    """
+    result = copy.deepcopy(exposure)
+    groups = {}
+    for zone in result["zones"]:
+        groups.setdefault(zone["event_id"], []).append(zone)
+    retained, removed, collisions, duplicate_groups = [], 0, 0, 0
+    for key in sorted(groups):
+        zones = groups[key]
+        normalized = {_canonical_payload(z) for z in zones}
+        if len(zones) > 1:
+            duplicate_groups += 1
+        if len(normalized) > 1:
+            collisions += 1
+            retained.extend(zones)
+        else:
+            removed += len(zones) - 1
+            retained.append(zones[0])
+    retained.sort(key=lambda z: (z["timestamp"], z["timeframe"], z["event_id"], _canonical_payload(z)))
+    result["zones"] = retained
+    result["zone_identity_diagnostics"] = {
+        "duplicate_group_count": duplicate_groups, "zone_deduplicated_count": removed,
+        "collision_group_count": collisions,
+        "reason_codes": (["DUPLICATE_IDENTICAL_ZONE_DEDUPED"] if removed else []) +
+                        (["EVENT_ID_COLLISION_DIFFERENT_PAYLOAD"] if collisions else []),
+    }
+    return result
+
+
 def identity(kind, *parts):
     data = json.dumps([SCHEMA, kind, *parts], sort_keys=True, separators=(",", ":"))
     return kind + "-" + hashlib.sha256(data.encode()).hexdigest()[:24]
@@ -90,7 +127,7 @@ def build_exposure(frames, review, checkpoint):
         d["selection_reason"] = "EXACT_SELECTED_TEXT_MATCH" if len(matches) == 1 else "SELECTION_TIMEFRAME_AMBIGUOUS"
     for key in ("raw_directional_displacement", "structure_events", "liquidity_events", "zones"):
         result[key].sort(key=lambda e: (e["timestamp"], e["timeframe"], e["event_id"]))
-    return result
+    return deduplicate_zones(result)
 
 
 def capture_noncanonical(frames_by_symbol, reviews, checkpoint):
@@ -107,25 +144,40 @@ def capture_noncanonical(frames_by_symbol, reviews, checkpoint):
     return {"schema": "non-canonical-tactical-research.v1", "tactical_provenance": captured}
 
 
-def valid_exposure(exposure, review, checkpoint):
+def exposure_validation(exposure, review, checkpoint):
     if not isinstance(exposure, dict) or exposure.get("schema") != SCHEMA or exposure.get("status") != "AVAILABLE":
-        return False
+        return {"valid": False, "status": "RAW_EVIDENCE_UNAVAILABLE", "reason": "RAW_EVIDENCE_UNAVAILABLE"}
+    invalid = {"valid": False, "status": "EXPOSURE_VALIDATION_FAILED", "reason": "INVALID_EXPOSURE"}
     if exposure.get("symbol") != review.get("Symbol") or exposure.get("checkpoint") != checkpoint:
-        return False
+        return invalid
     if exposure.get("production_selected_displacement") != review.get("Displacement", "UNAVAILABLE"):
-        return False
+        return invalid
     try:
         for key in ("raw_directional_displacement", "structure_events", "liquidity_events", "zones"):
-            seen = set()
+            seen = {}
+            identical_duplicate = False
             for e in exposure[key]:
+                normalized = _canonical_payload(e)
+                if e["event_id"] in seen:
+                    if seen[e["event_id"]] != normalized:
+                        return {"valid": False, "status": "EXPOSURE_VALIDATION_FAILED",
+                                "reason": "EVENT_ID_COLLISION_DIFFERENT_PAYLOAD", "collection": key}
+                    identical_duplicate = True
                 if (type(e["timestamp"]) is not int or e["timestamp"] <= 0 or type(e["available_at"]) is not int or
-                    e["event_id"] in seen or e["symbol"] != review["Symbol"] or
+                    e["symbol"] != review["Symbol"] or
                     e["timestamp"] + TIMEFRAME_SECONDS[e["timeframe"]] > e["available_at"] or e["available_at"] > checkpoint):
-                    return False
-                seen.add(e["event_id"])
-        return True
+                    return invalid
+                seen[e["event_id"]] = normalized
+            if identical_duplicate:
+                return {"valid": False, "status": "EXPOSURE_VALIDATION_FAILED",
+                        "reason": "DUPLICATE_EVENT_ID", "collection": key}
+        return {"valid": True, "status": "VALID", "reason": None}
     except (KeyError, TypeError, ValueError):
-        return False
+        return invalid
+
+
+def valid_exposure(exposure, review, checkpoint):
+    return exposure_validation(exposure, review, checkpoint)["valid"]
 
 
 def bind_tactical_identity(review, exposure, checkpoint):
@@ -133,7 +185,10 @@ def bind_tactical_identity(review, exposure, checkpoint):
     out = {"schema": "tactical_setup_identity.v1", "status": "TACTICAL_IDENTITY_INCOMPLETE",
            "tactical_setup_id": None, "anchors": {}, "origin_creation_allowed": False,
            "reason": "RAW_EVIDENCE_UNAVAILABLE"}
-    if not valid_exposure(exposure, review, checkpoint):
+    validation = exposure_validation(exposure, review, checkpoint)
+    if not validation["valid"]:
+        out["reason"] = validation["status"]
+        out["validation_reason"] = validation["reason"]
         return out
     shadow = classify_tactical(review, checkpoint)
     direction = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(shadow["tactical_direction"])

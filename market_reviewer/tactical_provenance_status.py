@@ -7,14 +7,15 @@ from .research_side_diagnostics import DEFAULT_JOURNAL
 from .smc_live_sample_status import DEFAULT_LIVE_STORE
 from .tactical_evidence_audit import tactical_evidence_audit
 from .tactical_direction_shadow import tactical_direction_shadow
-from .tactical_provenance import valid_exposure, bind_tactical_identity
+from .tactical_provenance import exposure_validation, bind_tactical_identity
 
 
 def coverage_buckets(trace, review, exposure):
     direction = {"LONG": "BULLISH", "SHORT": "BEARISH"}.get(trace["tactical_direction"])
-    if not valid_exposure(exposure, review, trace["checkpoint"]):
-        return {"raw": "RAW_EVIDENCE_UNAVAILABLE", "M15": "UNAVAILABLE", "readiness": "E_UNAVAILABLE",
-                "identity": "TACTICAL_IDENTITY_INCOMPLETE"}
+    validation = exposure_validation(exposure, review, trace["checkpoint"])
+    if not validation["valid"]:
+        return {"raw": validation["status"], "M15": validation["status"], "readiness": "E_UNAVAILABLE",
+                "identity": "TACTICAL_IDENTITY_INCOMPLETE", "validation_reason": validation["reason"]}
     ds = exposure["raw_directional_displacement"]
     raw = ("RAW_MATCHING_DISPLACEMENT_FOUND" if any(e["direction"] == direction for e in ds) else
            "RAW_OPPOSITE_DISPLACEMENT_ONLY" if ds else "RAW_DISPLACEMENT_ABSENT")
@@ -48,12 +49,14 @@ def tactical_provenance_status(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_
                 saved[key] = review, exposure
         groups = {"selected_NONE_215": Counter(), "selected_opposite_74": Counter(), "M15_opposite_136": Counter()}
         counter = {s: Counter() for s in ("BTC", "ETH")}
-        coverage, identities = Counter(), Counter()
+        coverage, identities, validation_reasons = Counter(), Counter(), Counter()
         for trace in audit["traces"]:
             review, exposure = saved.get((trace["observation"], trace["symbol"]), ({}, None))
             bucket = coverage_buckets(trace, review, exposure)
             coverage[bucket["raw"]] += 1
             identities[bucket["identity"]] += 1
+            if bucket.get("validation_reason"):
+                validation_reasons[bucket["validation_reason"]] += 1
             if trace["observation"] > 276:
                 continue
             reason = trace["requirements"]["directional_displacement"]["missing_reason"]
@@ -71,6 +74,7 @@ def tactical_provenance_status(journal_path=DEFAULT_JOURNAL, live_store=DEFAULT_
         return {"schema": "tactical-provenance-status.v1", "status": "PASS", "read_only": True,
                 "raw_displacement_coverage": dict(coverage), "baseline_reaudit": {k: dict(v) for k, v in groups.items()},
                 "identity_coverage": dict(identities), "countertrend_requalification": {k: dict(v) for k, v in counter.items()},
+                "validation_reasons": dict(validation_reasons),
                 "segments": shadow["segments"], "liquidity_provenance": "ONLY_EXPLICIT_POOL_ID_AND_EVENT_REFERENCES_BIND",
                 "recommendation": "KEEP_SHADOW_ONLY", "scope": "SAVED_PREFIX_ONLY_NO_BACKFILL"}
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
@@ -82,4 +86,4 @@ def render_status(result):
         for title, key in (("RAW DISPLACEMENT COVERAGE", "raw_displacement_coverage"),
             ("M15 EVENT COVERAGE / BASELINE REAUDIT", "baseline_reaudit"), ("LIQUIDITY PROVENANCE", "liquidity_provenance"),
             ("TACTICAL IDENTITY COVERAGE", "identity_coverage"), ("COUNTER-TREND REQUALIFICATION", "countertrend_requalification"),
-            ("SHADOW CONFIRMED / INCOMPLETE", "segments")))
+            ("EXPOSURE VALIDATION REASONS", "validation_reasons"), ("SHADOW CONFIRMED / INCOMPLETE", "segments")))
