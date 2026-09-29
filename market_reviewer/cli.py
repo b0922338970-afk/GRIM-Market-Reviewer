@@ -105,12 +105,24 @@ def build_parser() -> argparse.ArgumentParser:
     maturity.add_argument("--live-store", default="research/missed-opportunities.json")
     maturity.add_argument("--historical-outcomes", default="research/historical-replay/smc-hybrid-outcome.v1/outcome-join.json")
     maturity.add_argument("--json", action="store_true")
+    sides = subparsers.add_parser("research-side-diagnostics", help="Read-only live side imbalance archive audit")
+    sides.add_argument("--journal", default="artifact/observation-commit-journal.json")
+    sides.add_argument("--live-store", default="research/missed-opportunities.json")
+    sides.add_argument("--root", default="research/historical-replay/matched-smc-contrast.v1-verified")
+    sides.add_argument("--historical-outcomes", default="research/historical-replay/smc-hybrid-outcome.v1/outcome-join.json")
+    sides.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "research-side-diagnostics":
+        import json
+        from .research_side_diagnostics import research_side_diagnostics, render_diagnostics
+        result = research_side_diagnostics(Path(args.journal), Path(args.live_store), Path(args.root), Path(args.historical_outcomes))
+        print(json.dumps(result, indent=2, sort_keys=True) if args.json else render_diagnostics(result))
+        return 0
     if args.command == "research-maturity":
         import json
         from .research_maturity import research_maturity, render_maturity
