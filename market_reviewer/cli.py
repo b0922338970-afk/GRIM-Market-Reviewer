@@ -121,12 +121,22 @@ def build_parser() -> argparse.ArgumentParser:
     tactical.add_argument("--journal", default="artifact/observation-commit-journal.json")
     tactical.add_argument("--live-store", default="research/missed-opportunities.json")
     tactical.add_argument("--json", action="store_true")
+    binding = subparsers.add_parser("tactical-evidence-audit", help="Read-only tactical evidence availability and binding audit")
+    binding.add_argument("--journal", default="artifact/observation-commit-journal.json")
+    binding.add_argument("--live-store", default="research/missed-opportunities.json")
+    binding.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "tactical-evidence-audit":
+        import json
+        from .tactical_evidence_audit import tactical_evidence_audit, render_evidence_audit
+        result = tactical_evidence_audit(Path(args.journal), Path(args.live_store))
+        print(json.dumps(result, indent=2, sort_keys=True) if args.json else render_evidence_audit(result))
+        return 0 if result["status"] == "PASS" else 1
     if args.command == "tactical-direction-shadow":
         import json
         from .tactical_direction_shadow import tactical_direction_shadow, render_shadow
