@@ -126,14 +126,15 @@ def _base(review, checkpoint, observation, direction):
         "canonical": False, "origin_creation_allowed": False}
 
 
-def advance(previous, review, exposure, checkpoint, observation, frames=None):
+def advance(previous, review, exposure, checkpoint, observation, frames=None, *, frozen=None):
     """Pure checkpoint fold. Returns a new state, preserving all supplied objects.
 
     A target is frozen before subsequent sweep evidence can advance it. Transition
     checkpoints record when evidence was first evaluated, never a retroactive
     event time. Missing evidence suspends evaluation without erasing the lifecycle.
     """
-    fingerprint = _identity("INPUT", review, exposure, checkpoint, observation)
+    fingerprint = (_identity("INPUT", review, exposure, checkpoint, observation) if frozen is None
+                   else _identity("INPUT", review, exposure, checkpoint, observation, frozen))
     if previous:
         if previous.get("schema") != SCHEMA or previous["symbol"] != review["Symbol"]:
             raise ValueError("SHADOW_STATE_IDENTITY_MISMATCH")
@@ -159,7 +160,16 @@ def advance(previous, review, exposure, checkpoint, observation, frames=None):
         if int(review["Review_Timestamp"]) + 300 != checkpoint:
             raise ValueError("REVIEW_BOUNDARY_MISMATCH")
         inputs = _inputs(review, exposure, checkpoint)
-        prefix = _verified_prefix(frames, review, exposure, checkpoint)
+        if frozen is not None:
+            from .tactical_shadow_capture import validate_snapshot, locked_target_inputs
+            validate_snapshot(frozen)
+            if (frozen["review"] != review or frozen["exposure"] != exposure
+                    or frozen["checkpoint"] != checkpoint or frozen["observation_number"] != observation):
+                raise ValueError("FROZEN_INPUT_MISMATCH")
+            inputs = locked_target_inputs(inputs, frozen, previous)
+            prefix = None
+        else:
+            prefix = _verified_prefix(frames, review, exposure, checkpoint)
     except (KeyError, TypeError, ValueError):
         state["evaluation_status"] = "UNAVAILABLE"
         state["blockers"] = ["INPUT_OR_PREFIX_UNAVAILABLE"]
@@ -178,7 +188,12 @@ def advance(previous, review, exposure, checkpoint, observation, frames=None):
         _invalidate(state, checkpoint, "TACTICAL_DIRECTION_REVERSAL")
         return state
     if not state["sequence_id"] or state["sequence_state"] == "INVALIDATED":
-        target, reason = select_target(review, prefix, tactical, checkpoint, state["retired_target_ids"])
+        if frozen is not None:
+            target, reason = copy.deepcopy(frozen["selected_target"]), frozen["selection_reason"]
+            if target and target["liquidity_id"] in state["retired_target_ids"]:
+                target, reason = None, "TACTICAL_ACTIVE_TARGET_UNAVAILABLE:RETIRED_SHADOW_TARGET"
+        else:
+            target, reason = select_target(review, prefix, tactical, checkpoint, state["retired_target_ids"])
         if target is None:
             state["blockers"] = [reason]
             if not state["sequence_id"]:
@@ -195,7 +210,7 @@ def advance(previous, review, exposure, checkpoint, observation, frames=None):
 
     # Active identities are locked. No candidate FVG or nearest draw may replace them.
     if state["active_setup_id"]:
-        return _advance_retest(state, inputs, prefix, checkpoint)
+        return _advance_retest(state, inputs, prefix, checkpoint, frozen=frozen)
     target = state["active_target"]
     events = [e for e in inputs["liquidity_events"] if e.get("pool_id") == target["liquidity_id"]]
     selected_events = rv._events_for_active_target([rv.LiquidityEvent(**e["evidence"]) for e in events],
@@ -271,7 +286,7 @@ def advance(previous, review, exposure, checkpoint, observation, frames=None):
     return state
 
 
-def _advance_retest(state, inputs, prefix, checkpoint):
+def _advance_retest(state, inputs, prefix, checkpoint, *, frozen=None):
     gap = rv.FairValueGap(**state["active_setup"])
     same = [e for e in inputs["zones"] if e["event_id"] == state["setup_event_id"]
             and e.get("setup_id") == state["detector_setup_id"]
@@ -282,6 +297,23 @@ def _advance_retest(state, inputs, prefix, checkpoint):
         return state
     if state["sequence_state"] == "SETUP_FORMED":
         _transition(state, "RETEST_PENDING", checkpoint, {"setup_id": state["active_setup_id"]})
+    if frozen is not None:
+        from .tactical_shadow_capture import frozen_retest
+        refreshed, retest = frozen_retest(frozen, gap, state["setup_selected_at"])
+        if refreshed is None:
+            state["evaluation_status"] = "UNAVAILABLE"
+            state["blockers"] = ["RETEST_FROZEN_SCOPE_UNAVAILABLE"]
+            return state
+        if refreshed.status == "INVALIDATED":
+            _invalidate(state, checkpoint, "LOCKED_SETUP_INVALIDATED")
+            return state
+        state["active_setup"] = asdict(refreshed)
+        if retest.confirmed and retest.setup_id == state["detector_setup_id"]:
+            state["eligible_retest"] = {**asdict(retest), "setup_id": state["active_setup_id"],
+                "detector_setup_id": retest.setup_id, "available_at": checkpoint}
+            _transition(state, "RETEST_CONFIRMED", checkpoint, state["eligible_retest"])
+        state["blockers"] = [] if state["eligible_retest"]["confirmed"] else ["NO_FORWARD_ELIGIBLE_RETEST"]
+        return state
     if prefix is None:
         state["evaluation_status"] = "UNAVAILABLE"
         state["blockers"] = ["RETEST_CLOSED_CANDLE_SCOPE_UNAVAILABLE"]

@@ -91,7 +91,7 @@ def run_observation_loop(
     cfg = config or RunnerConfig()
     now = clock or (lambda: int(time.time()))
     sleep = sleeper or time.sleep
-    production = production_executor or (lambda preparation, observation_number: execute_production_observation(preparation, observation_number, cfg.state_path))
+    production = production_executor or (lambda preparation, observation_number: execute_production_observation(preparation, observation_number, cfg.state_path, shadow_output_dir=cfg.output_dir))
     research = research_executor or (lambda payload: execute_research_observation(payload, cfg.research_tracker_path))
 
     lock = _acquire_runner_lock(cfg, now)
@@ -165,6 +165,12 @@ def run_observation_cycle(
         _append_runner_log(config.runner_log_path, cycle)
         return cycle
     observation_number = next_observation_number(config.research_tracker_path, config.commit_journal_path, config.production_head_path)
+    # Only newly version-marked COMPLETE captures can be recovered here.
+    try:
+        from .tactical_shadow_capture import recover_completed
+        recover_completed(config)
+    except Exception:
+        pass
 
     _update_runner_state(
         config,
@@ -275,7 +281,7 @@ def observation_runner_status(
     }
 
 
-def execute_production_observation(preparation: dict[str, Any], observation_number: int, state_path: Path) -> dict[str, Any]:
+def execute_production_observation(preparation: dict[str, Any], observation_number: int, state_path: Path, *, shadow_output_dir: Path | None = None) -> dict[str, Any]:
     market_path = Path(str(preparation["market_path"]))
     external_path = Path(str(preparation["external_path"]))
     reviews = review_snapshot(market_path, state_path, enforce_replay_coverage=True)
@@ -298,6 +304,13 @@ def execute_production_observation(preparation: dict[str, Any], observation_numb
         from .tactical_provenance import capture_noncanonical
         payload["non_canonical_research_evidence"] = capture_noncanonical(
             frames, reviews, preparation.get("canonical_checkpoint"))
+    except Exception:
+        pass
+    try:
+        from .tactical_shadow_capture import capture_inputs, KEY
+        evidence = payload.setdefault("non_canonical_research_evidence", {})
+        evidence[KEY] = capture_inputs(frames, reviews, evidence.get("tactical_provenance", {}),
+            preparation.get("canonical_checkpoint"), observation_number, shadow_output_dir or market_path.parent)
     except Exception:
         pass
     return payload
@@ -447,6 +460,7 @@ def _execute_ready_cycle(
         research_state_sha256=_sha256_or_none(config.research_tracker_path),
         recovery_payload=production_payload,
     )
+    _commit_completed_tactical_shadow(config, observation_number)
     _publish_completed_website(config, observation_number, preparation.get("canonical_checkpoint"), clock)
     try:
         from .notification_delivery import dispatch_completed_reviews
@@ -460,6 +474,17 @@ def _execute_ready_cycle(
         "blocker": None,
         "next_scheduled_run": _next_interval_time(clock, config),
     }
+
+
+def _commit_completed_tactical_shadow(config: RunnerConfig, observation_number: int) -> None:
+    try:
+        from .tactical_shadow_capture import commit_after_complete
+        result = commit_after_complete(config, observation_number)
+        if result.get("status") in {"PERSISTENCE_FAILED", "CONFLICT"}:
+            _append_runner_log(config.runner_log_path, {
+                "tactical_shadow_persistence": result["status"], "observation": observation_number})
+    except Exception:
+        pass  # Shadow capture never changes the completed observation result.
 
 
 def _publish_completed_website(config: RunnerConfig, observation_number: int, checkpoint: int | None, clock: Clock) -> None:
@@ -579,6 +604,7 @@ def _reconcile_observation_transactions(config: RunnerConfig, research_executor:
             research_state_sha256=_sha256_or_none(config.research_tracker_path),
         )
         _update_runner_state(config, clock, status="IDLE", pending_research=None, last_successful_observation=observation_number)
+        _commit_completed_tactical_shadow(config, observation_number)
         _publish_completed_website(config, observation_number, tx.get("canonical_checkpoint"), clock)
         return {"status": "PASS", "observation_number": observation_number, "recovery": "RESEARCH_ALREADY_PRESENT"}
     if identity_status == "MISMATCH":
@@ -620,6 +646,7 @@ def _reconcile_observation_transactions(config: RunnerConfig, research_executor:
             last_successful_observation=observation_number,
             successful_observations_delta=1,
         )
+        _commit_completed_tactical_shadow(config, observation_number)
         _publish_completed_website(config, observation_number, tx.get("canonical_checkpoint"), clock)
         return {"status": "PASS", "observation_number": observation_number, "recovery": PENDING_RESEARCH_RECOVERY}
     return None

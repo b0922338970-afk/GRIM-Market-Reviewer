@@ -135,12 +135,21 @@ def build_parser() -> argparse.ArgumentParser:
     shadow_sequence = subparsers.add_parser("tactical-sequence-shadow", help="Read-only independent tactical lifecycle replay")
     shadow_sequence.add_argument("--journal", default="artifact/observation-commit-journal.json")
     shadow_sequence.add_argument("--json", action="store_true")
+    shadow_live = subparsers.add_parser("tactical-sequence-live-status", help="Read-only durable shadow capture status")
+    shadow_live.add_argument("--output-dir", default="artifact")
+    shadow_live.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "tactical-sequence-live-status":
+        import json
+        from .tactical_shadow_capture import live_status
+        result = live_status(Path(args.output_dir))
+        print(json.dumps(result, indent=2, sort_keys=True))
+        return 1 if result["status"] == "UNAVAILABLE" else 0
     if args.command == "tactical-sequence-shadow":
         import json
         from .tactical_sequence_shadow import tactical_sequence_shadow, render_shadow_sequence
