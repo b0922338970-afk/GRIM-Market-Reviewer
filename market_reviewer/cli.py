@@ -129,12 +129,21 @@ def build_parser() -> argparse.ArgumentParser:
     provenance.add_argument("--journal", default="artifact/observation-commit-journal.json")
     provenance.add_argument("--live-store", default="research/missed-opportunities.json")
     provenance.add_argument("--json", action="store_true")
+    chain_audit = subparsers.add_parser("tactical-chain-audit", help="Read-only tactical contextual/setup producer audit")
+    chain_audit.add_argument("--journal", default="artifact/observation-commit-journal.json")
+    chain_audit.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "tactical-chain-audit":
+        import json
+        from .tactical_chain_audit import tactical_chain_audit, render_chain_audit
+        result = tactical_chain_audit(Path(args.journal))
+        print(json.dumps(result, indent=2, sort_keys=True) if args.json else render_chain_audit(result))
+        return 0 if result["status"] == "PASS" else 1
     if args.command == "tactical-provenance-status":
         import json
         from .tactical_provenance_status import tactical_provenance_status, render_status

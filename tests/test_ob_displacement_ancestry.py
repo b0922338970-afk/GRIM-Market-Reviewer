@@ -118,6 +118,9 @@ class OBAncestryTests(unittest.TestCase):
             self.skipTest('Optional #282 source unavailable')
         p = tx['recovery_payload']
         frames = _load_frames(Path(p['market_path']))
+        if any(frames[s]['M5'].latest_closed_candle_timestamp + 300 != p['canonical_checkpoint']
+               for s in ('BTC', 'ETH')):
+            self.skipTest('Optional #282 raw source overwritten by a later observation')
         original = copy.deepcopy(p)
         for symbol in ('BTC', 'ETH'):
             with self.subTest(symbol=symbol):
