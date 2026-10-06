@@ -336,6 +336,8 @@ def tactical_sequence_acceptance_audit(root=Path("artifact")):
                 sequence["transitions"].extend(t for t in record["transitions"] if t["sequence_id"] == identity)
             if record["transitions"] != capture._transitions(current, obs, cp):
                 raise ValueError("DURABLE_TRANSITION_REPLAY_MISMATCH")
+        from .tactical_sequence_metrics import sequence_metrics
+        reconciled = sequence_metrics(records)
         items = [_summarize_sequence(s) for s in sequences.values()]
         churn = _churn(items)
         invalidations = [s["invalidation"] for s in items if s["invalidation"]]
@@ -367,7 +369,12 @@ def tactical_sequence_acceptance_audit(root=Path("artifact")):
         return {**report, "status": "PASS", "observations": len(records), "sequence_count": len(items),
             "sequences": items, "funnel": {stage: _counts(items, lambda s, st=stage: s["funnel"][st]) for stage in STAGES},
             "first_blockers": dict(Counter(s["first_blocker"] for s in items if s["first_blocker"])),
-            "invalidations": {"total": len(invalidations), "reasons": dict(sorted(reasons.items())), "categories": categories},
+            "sequence_metrics": reconciled,
+            "invalidations": {"total": len(invalidations),
+                "total_semantics": "Backward-compatible distinct sequence count; first invalidation per sequence",
+                "invalidated_unique_sequences": reconciled["invalidated_unique_sequences"],
+                "invalidation_transitions": reconciled["invalidation_transitions"],
+                "reasons": dict(sorted(reasons.items())), "categories": categories},
             "churn": churn, "current": active, "final_assessment": _assessment(items, churn),
             "post_terminal_diagnostics": {
                 "targets_with_post_selection_sweep": sum(bool(s["target_audit"]["post_terminal_sweeps"]) for s in items),
@@ -383,7 +390,9 @@ def tactical_sequence_acceptance_audit(root=Path("artifact")):
             "persisted_mss_confirmed": sum(s["funnel"]["MSS_CONFIRMED"] for s in items),
             "source_hashes_unchanged": unchanged, "deterministic_receipt_replay": "PASS",
             "expected_count_reconciliation": {"expected_starts": 18, "actual_starts": len(items),
-                "expected_invalidations": 11, "actual_invalidations": len(invalidations)},
+                "expected_invalidations": 11, "actual_invalidations": len(invalidations),
+                "expected_invalidations_semantics": "Original reported baseline, not a lifecycle invariant",
+                "actual_invalidations_semantics": "Distinct sequence IDs with an invalidation in #301-#419"},
             "limitations": ["Absence means absent in legally frozen detector scope, not proof of no intrabar market interaction.",
                 "The existing detector emits the first sweep per prefix/reference; repeated penetrations are not reconstructed.",
                 "Post-terminal evidence is shown separately and cannot advance the retired sequence.",
@@ -405,6 +414,7 @@ def render_acceptance_audit(report):
     lines.extend(f"{stage}: {counts['TOTAL']}" for stage, counts in report["funnel"].items())
     lines.extend(("FIRST BLOCKERS", json.dumps(report["first_blockers"], sort_keys=True),
                   "INVALIDATIONS", json.dumps(report["invalidations"], sort_keys=True),
+                  "SEQUENCE METRICS", json.dumps(report["sequence_metrics"], sort_keys=True),
                   "SEQUENCE CHURN", json.dumps(report["churn"], sort_keys=True)))
     for s in report["sequences"]:
         lines.append(f"{s['symbol']} {s['sequence_id']} #{s['start_observation']}-#{s['end_observation']} "

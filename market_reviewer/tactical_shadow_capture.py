@@ -394,9 +394,12 @@ def recover_completed(config):
 
 
 def live_status(root=Path("artifact")):
+    from .tactical_sequence_metrics import sequence_metrics
     root = Path(root)
     result = {"schema": "tactical-shadow-live-status.v1", "read_only": True,
-              "origin_creation_allowed": False, "SHADOW_SEQUENCE_CAPTURE_READY": False,
+              "origin_creation_allowed": False, "sequence_metrics": None,
+              "invalidated_semantics": "Backward-compatible alias of invalidation_transitions",
+              "SHADOW_SEQUENCE_CAPTURE_READY": False,
               "SHADOW_SEQUENCE_VALIDATED": False, "activation_observation": None, "latest_observation": None,
               "symbols": {s: {"current_sequence": None, "direction": "UNAVAILABLE", "relationship": "UNAVAILABLE",
                   "state": "UNAVAILABLE", "target": None, "started_at": None, "last_transition": None,
@@ -422,6 +425,7 @@ def live_status(root=Path("artifact")):
         incomplete_latest = any(e["observation"] > (ledger["latest_observation"] or 0) for e in health["events"])
         ready = consecutive >= 4 and not conflicts and not incomplete_latest and not (root / "tactical-shadow.lock").exists()
         transitions = [t for r in records for t in r["transitions"]]
+        reconciled = sequence_metrics(records)
         metrics = {name: sum(t["to_state"] == state for t in transitions) for name, state in
                    (("sequence_started", "FORMING"), ("MSS_confirmed", "MSS_CONFIRMED"),
                     ("setup_formed", "SETUP_FORMED"), ("retest_pending", "RETEST_PENDING"),
@@ -435,6 +439,10 @@ def live_status(root=Path("artifact")):
                 "observations_seen": sum(symbol in r["states"] for r in records)}
         return {**result, "status": "PASS", "activation_observation": ledger["activation_observation"],
                 "latest_observation": ledger["latest_observation"], "symbols": symbols, **metrics,
+                "sequence_metrics": reconciled,
+                **{k: reconciled[k] for k in ("unique_sequence_ids", "invalidated_unique_sequences",
+                    "invalidation_transitions", "withdrawn_transitions", "reversal_transitions",
+                    "still_active_sequences", "current_invalidated_sequences")},
                 "persistence_failures": failures, "conflicts": conflicts, "consecutive_complete_observations": consecutive,
                 "fresh_process_replay": "PASS", "SHADOW_SEQUENCE_CAPTURE_READY": ready,
                 "SHADOW_SEQUENCE_VALIDATED": ready and metrics["MSS_confirmed"] > 0,
