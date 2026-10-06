@@ -138,12 +138,21 @@ def build_parser() -> argparse.ArgumentParser:
     shadow_live = subparsers.add_parser("tactical-sequence-live-status", help="Read-only durable shadow capture status")
     shadow_live.add_argument("--output-dir", default="artifact")
     shadow_live.add_argument("--json", action="store_true")
+    acceptance = subparsers.add_parser("tactical-sequence-acceptance-audit", help="Read-only durable #301-#419 acceptance attribution")
+    acceptance.add_argument("--output-dir", default="artifact")
+    acceptance.add_argument("--json", action="store_true")
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "tactical-sequence-acceptance-audit":
+        import json
+        from .tactical_sequence_acceptance_audit import tactical_sequence_acceptance_audit, render_acceptance_audit
+        result = tactical_sequence_acceptance_audit(Path(args.output_dir))
+        print(json.dumps(result, indent=2, sort_keys=True) if args.json else render_acceptance_audit(result))
+        return 0 if result["status"] == "PASS" else 1
     if args.command == "tactical-sequence-live-status":
         import json
         from .tactical_shadow_capture import live_status
